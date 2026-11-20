@@ -131,6 +131,8 @@ struct MirrorPage {
     summary: String,
     def_toml: String,
     prune: bool,
+    /// Re-signed into the publish of its name.
+    resign: bool,
     can_publish: bool,
     can_admin: bool,
 }
@@ -154,6 +156,7 @@ async fn mirror_page(
                 summary: v.status.summary.clone().unwrap_or_default(),
                 def_toml: toml::to_string_pretty(&v.def).unwrap_or_default(),
                 prune: v.def.prune,
+                resign: v.def.kind == crate::mirrors::Kind::Resign,
                 can_publish: u.can(Role::Publisher),
                 can_admin: u.can(Role::Admin),
                 name: v.name,

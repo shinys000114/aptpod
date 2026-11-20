@@ -8,6 +8,7 @@ pub mod db;
 pub mod filter;
 pub mod history;
 pub mod layout;
+pub mod mirror;
 pub mod ops;
 pub mod plan;
 pub mod repo;

@@ -10,6 +10,7 @@ publish = false
 
 [dependencies]
 aptpod-core.workspace = true
+aptpod-repo.workspace = true
 reqwest.workspace = true
 thiserror.workspace = true
 flate2.workspace = true

@@ -211,14 +211,14 @@ struct Staged {
     report: DistReport,
 }
 
-enum DistErr {
+pub(crate) enum DistErr {
     /// Upstream changed while we read it: start the dist over.
     Changed(String),
     Fatal(String),
     Interrupted,
 }
 
-fn fe(what: &str, e: FetchError) -> DistErr {
+pub(crate) fn fe(what: &str, e: FetchError) -> DistErr {
     match e {
         FetchError::Interrupted => DistErr::Interrupted,
         e => DistErr::Fatal(format!("{what}: {e}")),
@@ -430,10 +430,14 @@ fn remove_staging(staged: &[Staged], extra: &Path) {
 }
 
 /// The upstream Release files as fetched: (name, bytes).
-type RawFiles = Vec<(&'static str, Vec<u8>)>;
+pub(crate) type RawFiles = Vec<(&'static str, Vec<u8>)>;
 
 /// Verified Release text of a dist, and the raw files to keep.
-fn release_of(m: &HttpMirror, ctx: &Ctx, base: &str) -> Result<(Release, RawFiles), DistErr> {
+pub(crate) fn release_of(
+    m: &HttpMirror,
+    ctx: &Ctx,
+    base: &str,
+) -> Result<(Release, RawFiles), DistErr> {
     let get = |name: &str| match ctx
         .http
         .get_retry(&join_url(base, name), m.retries, ctx.cancel)
@@ -491,11 +495,15 @@ fn release_of(m: &HttpMirror, ctx: &Ctx, base: &str) -> Result<(Release, RawFile
     Ok((rel, raw))
 }
 
-/// Fetches Release and the selected indices of `dist` into `staging`;
-/// returns the pool files they reference.
-fn stage_dist(m: &HttpMirror, ctx: &Ctx, dist: &str, staging: &Path) -> Result<Staging, DistErr> {
-    let base = join_url(&m.url, &format!("dists/{dist}")) + "/";
-    let (rel, raw) = release_of(m, ctx, &base)?;
+/// An index group: (directory, base name, required).
+pub(crate) type IndexGroup = (String, &'static str, bool);
+
+/// Index groups of a dist (directory, base name, required) for the
+/// selected components and architectures, and those architectures.
+pub(crate) fn index_groups(
+    m: &HttpMirror,
+    rel: &Release,
+) -> Result<(Vec<String>, Vec<IndexGroup>), DistErr> {
     let pick = |field: &str, want: &[String], what: &str| -> Result<Vec<String>, DistErr> {
         let listed = rel.list(field);
         if want.is_empty() {
@@ -516,7 +524,7 @@ fn stage_dist(m: &HttpMirror, ctx: &Ctx, dist: &str, staging: &Path) -> Result<S
     let archs = pick("Architectures", &m.architectures, "architecture")?;
 
     // Index groups: (directory, base name, required, kind).
-    let mut groups: Vec<(String, &str, bool)> = Vec::new();
+    let mut groups: Vec<(String, &'static str, bool)> = Vec::new();
     for c in &comps {
         for a in &archs {
             groups.push((format!("{c}/binary-{a}"), "Packages", true));
@@ -539,6 +547,15 @@ fn stage_dist(m: &HttpMirror, ctx: &Ctx, dist: &str, staging: &Path) -> Result<S
             groups.push((format!("{c}/source"), "Sources", true));
         }
     }
+    Ok((archs, groups))
+}
+
+/// Fetches Release and the selected indices of `dist` into `staging`;
+/// returns the pool files they reference.
+fn stage_dist(m: &HttpMirror, ctx: &Ctx, dist: &str, staging: &Path) -> Result<Staging, DistErr> {
+    let base = join_url(&m.url, &format!("dists/{dist}")) + "/";
+    let (rel, raw) = release_of(m, ctx, &base)?;
+    let (_, groups) = index_groups(m, &rel)?;
     let mut todo: BTreeSet<String> = BTreeSet::new();
     for (dir, base_name, _) in &groups {
         for ext in VARIANTS {
@@ -764,7 +781,11 @@ struct Staging {
 }
 
 /// `f` over `items` on up to `n` threads; results in input order.
-fn par_map<T: Sync, R: Send>(items: &[T], n: usize, f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+pub(crate) fn par_map<T: Sync, R: Send>(
+    items: &[T],
+    n: usize,
+    f: impl Fn(&T) -> R + Sync,
+) -> Vec<R> {
     let next = AtomicUsize::new(0);
     let out: Vec<Mutex<Option<R>>> = items.iter().map(|_| Mutex::new(None)).collect();
     std::thread::scope(|s| {

@@ -27,14 +27,16 @@ pub enum MirrorCmd {
         /// TOML definition (as `mirror get` prints it), `-` for stdin.
         #[arg(long, conflicts_with_all = ["url", "path", "dist"])]
         from: Option<PathBuf>,
-        /// http (default), rsync-apt or rsync-tree.
+        /// http (default), rsync-apt, rsync-tree, or resign (into a publish
+        /// of the mirror's name, signed with the server's key).
         #[arg(long, default_value = "http")]
         kind: String,
         /// Archive root (holding `dists/` and `pool/`); for rsync kinds an
         /// rsync daemon source (rsync://host/module/).
         #[arg(long, required_unless_present = "from")]
         url: Option<String>,
-        /// Destination, under one of the server's mirror_roots.
+        /// Destination, under one of the server's mirror_roots (resign:
+        /// publish_roots).
         #[arg(long, required_unless_present = "from")]
         path: Option<PathBuf>,
         /// http: dists to mirror.
@@ -85,7 +87,24 @@ pub enum MirrorCmd {
         /// Do not sync on schedule.
         #[arg(long)]
         disabled: bool,
-        /// Mirror into a directory that already holds files (prune off).
+        /// resign: only these packages (globs, `name=version`; repeatable
+        /// or comma-separated).
+        #[arg(long = "package", value_delimiter = ',')]
+        packages: Vec<String>,
+        /// resign: leave these packages out.
+        #[arg(long = "exclude-package", value_delimiter = ',')]
+        exclude_packages: Vec<String>,
+        /// resign: Release Origin (default: the upstream's).
+        #[arg(long)]
+        origin: Option<String>,
+        /// resign: Release Label (default: the upstream's).
+        #[arg(long)]
+        label: Option<String>,
+        /// resign: sync snapshots to keep (default 10).
+        #[arg(long)]
+        keep_snapshots: Option<usize>,
+        /// Mirror into a directory that already holds files (prune off);
+        /// resign: also take over an existing publish of the same name.
         #[arg(long)]
         adopt: bool,
     },
@@ -246,6 +265,11 @@ pub fn run(c: &Client, cmd: MirrorCmd, json: bool) -> Result<(), CliError> {
             bwlimit,
             schedule,
             disabled,
+            packages,
+            exclude_packages,
+            origin,
+            label,
+            keep_snapshots,
             adopt,
         } => {
             let def = if let Some(f) = from {
@@ -275,6 +299,8 @@ pub fn run(c: &Client, cmd: MirrorCmd, json: bool) -> Result<(), CliError> {
                     "udebs": udebs, "sources": sources, "extras": extras,
                     "keyring": key, "insecure": insecure, "ignore_missing": ignore,
                     "prune": !no_prune,
+                    "packages": packages, "exclude_packages": exclude_packages,
+                    "origin": origin, "label": label, "keep_snapshots": keep_snapshots,
                 });
                 if let Some(p) = parallel {
                     d["parallel"] = json!(p);
@@ -333,6 +359,9 @@ pub fn run(c: &Client, cmd: MirrorCmd, json: bool) -> Result<(), CliError> {
                 "mirror {name} forgotten; its tree is still at {}",
                 r["path_left"].as_str().unwrap_or("?")
             );
+            if let Some(p) = r["publish_left"].as_str() {
+                println!("publish {p} stays, as an ordinary publish");
+            }
         }
         MirrorCmd::Sync {
             name,

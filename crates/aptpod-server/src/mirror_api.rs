@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 
 use crate::api::{ApiError, AppState, Caller, Res, St, read};
 use crate::authdb::Role;
-use crate::mirrors::{MirrorDef, Status, is_empty_dir};
+use crate::mirrors::{Kind, MirrorDef, Status, is_empty_dir};
 use crate::runner::{SyncOpts, log_path};
 
 pub fn routes() -> Router<Arc<AppState>> {
@@ -59,6 +59,31 @@ pub fn refuse_mirror_overlap(
     Ok(())
 }
 
+/// The re-signed mirror that fills publish `alias`, if any.
+pub(crate) fn resign_owner(st: &AppState, alias: &str) -> Result<Option<String>, ApiError> {
+    Ok(st
+        .auth
+        .mirror(alias)?
+        .filter(|d| d.kind == Kind::Resign)
+        .map(|_| alias.to_string()))
+}
+
+/// Refuses a manual change of a publish a re-signed mirror fills (its
+/// next sync would undo it). Snapshots and rollback stay allowed.
+pub(crate) fn refuse_mirrored(st: &AppState, alias: &str) -> Result<(), ApiError> {
+    if let Some(m) = resign_owner(st, alias)? {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "managed",
+            format!(
+                "publish {alias:?} is filled by mirror {m:?}; change the mirror instead \
+                 (snapshots and rollback still work, until the next sync)"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// Checks a definition and its destination; returns it as it will be
 /// stored (prune off for an adopted, non-empty tree) and a note.
 async fn checked(
@@ -80,9 +105,28 @@ async fn checked(
     refuse_mirror_overlap(st, &def.path, Some(name))?;
     let path = def.path.clone();
     let publishes = read(st, |r| r.publishes()).await?;
+    let resign = def.kind == Kind::Resign;
+    // A re-signed mirror fills the publish of its name.
+    let owned = |alias: &str| resign && alias == name;
+    if resign
+        && publishes.iter().any(|(a, _)| a == name)
+        && previous.is_none_or(|p| p.kind != Kind::Resign)
+        && !adopt
+    {
+        return Err(ApiError::invalid(format!(
+            "publish {name:?} exists; pass adopt to let the mirror take it over \
+             (each sync replaces its layout and contents)"
+        )));
+    }
+    if !resign && previous.is_some_and(|p| p.kind == Kind::Resign) {
+        return Err(ApiError::invalid(
+            "a re-signed mirror cannot become a verbatim one (its tree is a publish); \
+             delete it and define a new mirror",
+        ));
+    }
     if let Some((alias, l)) = publishes
         .iter()
-        .find(|(_, l)| paths_overlap(&l.path, &path))
+        .find(|(a, l)| !owned(a) && paths_overlap(&l.path, &path))
     {
         return Err(ApiError::invalid(format!(
             "{} overlaps publish {alias:?} ({})",
@@ -90,9 +134,20 @@ async fn checked(
             l.path.display()
         )));
     }
-    let same_path = previous.is_some_and(|p| p.path == def.path);
+    let same_path = previous.is_some_and(|p| p.path == def.path)
+        || (resign
+            && publishes
+                .iter()
+                .any(|(a, l)| a == name && l.path == def.path));
     let mut note = None;
-    if !same_path && !is_empty_dir(&def.path) {
+    if !same_path && !is_empty_dir(&def.path) && resign {
+        if !adopt {
+            return Err(ApiError::invalid(format!(
+                "{} already holds files; pass adopt to publish into it",
+                def.path.display()
+            )));
+        }
+    } else if !same_path && !is_empty_dir(&def.path) {
         if !adopt {
             return Err(ApiError::invalid(format!(
                 "{} already holds files; pass adopt to mirror into it",
@@ -229,6 +284,10 @@ async fn remove(State(st): St, caller: Caller, Path(name): Path<String>) -> Res<
     st.auth.mirror_del(&name)?;
     crate::schedule::write_status(&st);
     let _ = std::fs::remove_dir_all(st.cfg.data_dir.join("mirrors").join(&name));
+    if def.kind == Kind::Resign {
+        // The publish stays, as an ordinary one.
+        return Ok(Json(json!({ "path_left": def.path, "publish_left": name })));
+    }
     Ok(Json(json!({ "path_left": def.path })))
 }
 
@@ -288,7 +347,12 @@ pub(crate) async fn check(State(st): St, caller: Caller, Path(name): Path<String
             Ok(crate::mirrors::Engine::Rsync(r)) => {
                 vec![(def.url.clone(), aptpod_mirror::rsync::probe(&r))]
             }
-            Ok(crate::mirrors::Engine::Http(h)) => {
+            Ok(e @ (crate::mirrors::Engine::Http(_) | crate::mirrors::Engine::Resign(_))) => {
+                let h = match e {
+                    crate::mirrors::Engine::Http(h) => h,
+                    crate::mirrors::Engine::Resign(r) => r.source,
+                    crate::mirrors::Engine::Rsync(_) => unreachable!(),
+                };
                 match aptpod_mirror::fetch::Http::new(std::time::Duration::from_secs(30)) {
                     Ok(http) => aptpod_mirror::http::probe(&h, &http),
                     Err(e) => vec![("http".into(), Err(e.to_string()))],

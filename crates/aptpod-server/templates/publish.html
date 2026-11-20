@@ -1,8 +1,11 @@
 {% extends "base.html" %}
 {% block title %}{{ alias }} · aptpod{% endblock %}
 {% block main %}
-<h1>{{ alias }} {% if managed %}<span class="tag">config file</span>{% endif %}</h1>
+<h1>{{ alias }} {% if managed %}<span class="tag">config file</span>{% endif %}{% if let Some(m) = mirror %}<span class="tag">mirror</span>{% endif %}</h1>
 <p class="mono">{{ path }}</p>
+{% if let Some(m) = mirror %}
+<p class="muted">Filled by the re-signed mirror <a href="{{ s.base }}mirrors/{{ m }}">{{ m }}</a>: every sync brings it to the upstream state (a snapshot each time). Snapshots and rollback work until the next sync.</p>
+{% endif %}
 
 <h2>Cells</h2>
 <div id="matrix" hx-get="{{ s.base }}p/{{ alias }}/matrix" hx-trigger="packages-changed from:body">
@@ -18,7 +21,7 @@
 <div id="packages" hx-get="{{ s.base }}p/{{ alias }}/packages" hx-trigger="load, packages-changed from:body" hx-include="form.filter">
 </div>
 
-{% if can_publish %}
+{% if can_publish && mirror.is_none() %}
 <h2>Add packages</h2>
 <form class="action" hx-post="{{ s.base }}p/{{ alias }}/add" hx-encoding="multipart/form-data" hx-target="#add-result">
   <select name="component">{% for c in components %}<option>{{ c }}</option>{% endfor %}</select>
@@ -70,7 +73,10 @@
 <div id="rollback-result"></div>
 
 <h2>Layout</h2>
-{% if managed %}
+{% if mirror.is_some() %}
+<p class="muted">Follows the upstream; change the mirror's definition instead.</p>
+<pre class="log">{{ layout_toml }}</pre>
+{% else if managed %}
 <p class="muted">Managed by the server's config file; edit it there and reload the server.</p>
 <pre class="log">{{ layout_toml }}</pre>
 {% else if can_admin %}

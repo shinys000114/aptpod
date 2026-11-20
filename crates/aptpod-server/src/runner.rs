@@ -5,7 +5,7 @@
 //! on a tokio worker). One sync per mirror at a time; every sync is a job
 //! with its own log file.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use aptpod_mirror::fetch::Http;
 use aptpod_mirror::http::{Ctx, SyncReport, sync};
+use aptpod_mirror::resign::ResignReport;
 use aptpod_mirror::rsync::RsyncReport;
 
 use crate::api::{ApiError, AppState};
@@ -179,6 +180,74 @@ fn summary(r: &SyncReport) -> String {
     s
 }
 
+fn resign_summary(r: &ResignReport) -> String {
+    let mut s = format!(
+        "{} package(s), {} downloaded ({:.1} MB)",
+        r.packages,
+        r.downloaded,
+        r.downloaded_bytes as f64 / 1e6
+    );
+    match r.publish.as_ref() {
+        Some(p) if p.revision.is_some() => s.push_str(&format!(
+            ", revision #{}{}: {} added, {} removed",
+            p.revision.unwrap_or_default(),
+            p.snapshot
+                .as_deref()
+                .map(|l| format!(" ({l})"))
+                .unwrap_or_default(),
+            p.added,
+            p.removed
+        )),
+        Some(_) => s.push_str(", publish unchanged"),
+        None => {}
+    }
+    if !r.ignored_missing.is_empty() {
+        s.push_str(&format!(
+            ", {} missing upstream (ignored)",
+            r.ignored_missing.len()
+        ));
+    }
+    s
+}
+
+/// The repository side of a re-signed sync: queries on the read handle,
+/// the change on the single writer.
+struct ServerTarget<'a> {
+    st: &'a Arc<AppState>,
+    name: &'a str,
+}
+
+impl aptpod_mirror::resign::Target for ServerTarget<'_> {
+    fn known(&self, sha256: &[String]) -> Result<HashSet<String>, aptpod_mirror::Error> {
+        let r = self.st.reader.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(r.known_packages(sha256)?.into_iter().collect())
+    }
+
+    fn apply(
+        &self,
+        sync: aptpod_repo::mirror::MirrorSync,
+    ) -> Result<aptpod_repo::mirror::MirrorReport, aptpod_mirror::Error> {
+        let name = self.name.to_string();
+        let author = format!("mirror {name}");
+        let r = self
+            .st
+            .writer
+            .run_blocking(move |r| {
+                let rep = r.sync_mirror(&name, &sync, &author)?;
+                // Old sync snapshots dropped: their packages can go (gc
+                // covers the whole repository; recent ingests are kept).
+                if !rep.dropped_snapshots.is_empty()
+                    && let Err(e) = r.gc()
+                {
+                    tracing::warn!(mirror = %name, "gc after a sync: {e}");
+                }
+                Ok::<_, aptpod_repo::Error>(rep)
+            })
+            .map_err(|_| aptpod_mirror::Error::Config("the server is stopping".into()))?;
+        Ok(r?)
+    }
+}
+
 fn rsync_summary(r: &RsyncReport) -> String {
     let files: u64 = r.passes.iter().map(|p| p.files_transferred).sum();
     let bytes: u64 = r.passes.iter().map(|p| p.bytes_transferred).sum();
@@ -224,6 +293,7 @@ fn run_task(st: &Arc<AppState>, task: Task) {
     enum Done {
         Http(SyncReport),
         Rsync(RsyncReport),
+        Resign(ResignReport),
     }
     let run = || -> Result<Done, String> {
         let engine = def.engine()?;
@@ -241,6 +311,28 @@ fn run_task(st: &Arc<AppState>, task: Task) {
                 };
                 return aptpod_mirror::rsync::sync(&r, &ctx)
                     .map(Done::Rsync)
+                    .map_err(|e| match e {
+                        aptpod_mirror::Error::Interrupted => "interrupted".to_string(),
+                        e => e.to_string(),
+                    });
+            }
+            crate::mirrors::Engine::Resign(mut m) => {
+                m.force |= opts.prune;
+                // The definition check refused a non-empty path without adopt.
+                m.adopt = true;
+                let http = Http::new(Duration::from_secs(60)).map_err(|e| e.to_string())?;
+                let state_dir = st.cfg.data_dir.join("mirrors").join(&name);
+                let store = aptpod_repo::store::Store::new(st.cfg.data_dir.join("store"));
+                let ctx = aptpod_mirror::resign::ResignCtx {
+                    http: &http,
+                    state_dir: &state_dir,
+                    store: &store,
+                    cancel: &cancel,
+                    log: &log,
+                };
+                let target = ServerTarget { st, name: &name };
+                return aptpod_mirror::resign::sync(&m, &ctx, &target)
+                    .map(Done::Resign)
                     .map_err(|e| match e {
                         aptpod_mirror::Error::Interrupted => "interrupted".to_string(),
                         e => e.to_string(),
@@ -285,6 +377,19 @@ fn run_task(st: &Arc<AppState>, task: Task) {
                 serde_json::to_value(r).ok(),
             )
         }
+        Ok(Done::Resign(r)) => (
+            if r.ok() { "done" } else { "failed" },
+            resign_summary(r),
+            (!r.ok()).then(|| {
+                r.dists
+                    .iter()
+                    .filter(|d| !d.ok)
+                    .map(|d| format!("{}: {}", d.dist, d.error.as_deref().unwrap_or("failed")))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            }),
+            serde_json::to_value(r).ok(),
+        ),
         Ok(Done::Rsync(r)) => (
             if r.ok { "done" } else { "failed" },
             rsync_summary(r),

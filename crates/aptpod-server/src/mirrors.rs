@@ -22,13 +22,18 @@ pub enum Kind {
     RsyncApt,
     /// Any tree over rsync, one pass.
     RsyncTree,
+    /// Over HTTP(S) into an aptpod publish of the mirror's name, signed
+    /// with the server's key; a snapshot per sync.
+    Resign,
 }
 
-/// What a definition runs.
+/// What a definition runs (built per sync; the size does not matter).
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum Engine {
     Http(HttpMirror),
     Rsync(aptpod_mirror::rsync::RsyncMirror),
+    Resign(aptpod_mirror::resign::ResignMirror),
 }
 
 fn http() -> Kind {
@@ -117,6 +122,21 @@ pub struct MirrorDef {
     /// rsync: I/O timeout in seconds (default 900).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub io_timeout: Option<u32>,
+    /// resign: only these packages (name globs, optionally `name=version`
+    /// or with a version condition); empty: all.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub packages: Vec<String>,
+    /// resign: packages to leave out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude_packages: Vec<String>,
+    /// resign: Release Origin / Label (default: the upstream's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// resign: sync snapshots kept (default 10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_snapshots: Option<usize>,
 }
 
 fn is_true(b: &bool) -> bool {
@@ -141,7 +161,58 @@ impl MirrorDef {
                 self.http().map(Engine::Http)
             }
             Kind::RsyncApt | Kind::RsyncTree => self.rsync().map(Engine::Rsync),
+            Kind::Resign => self.resign().map(Engine::Resign),
         }
+    }
+
+    fn resign_only(&self) -> bool {
+        !self.packages.is_empty()
+            || !self.exclude_packages.is_empty()
+            || self.origin.is_some()
+            || self.label.is_some()
+            || self.keep_snapshots.is_some()
+    }
+
+    fn resign(&self) -> Result<aptpod_mirror::resign::ResignMirror, String> {
+        if self.insecure {
+            return Err(
+                "a re-signed mirror must check the upstream signature (no insecure)".into(),
+            );
+        }
+        if self.udebs || self.sources || !self.extras.is_empty() {
+            return Err("udebs, sources and extras are not supported by re-signed mirrors".into());
+        }
+        if !self.excludes.is_empty()
+            || self.trace_host.is_some()
+            || self.bwlimit.is_some()
+            || self.io_timeout.is_some()
+        {
+            return Err(
+                "excludes, trace_host, bwlimit and io_timeout are for rsync mirrors".into(),
+            );
+        }
+        if self.dists.is_empty() {
+            return Err("dists is empty".into());
+        }
+        let filter = |specs: &[String]| -> Result<Option<aptpod_repo::Filter>, String> {
+            if specs.is_empty() {
+                return Ok(None);
+            }
+            let v: Vec<&str> = specs.iter().map(String::as_str).collect();
+            aptpod_repo::Filter::new(&v, None, None)
+                .map(Some)
+                .map_err(|e| e.to_string())
+        };
+        let mut m = aptpod_mirror::resign::ResignMirror::new(&self.url, &[], &self.path);
+        m.source = self.http_source()?;
+        m.include = filter(&self.packages).map_err(|e| format!("packages: {e}"))?;
+        m.exclude = filter(&self.exclude_packages).map_err(|e| format!("exclude_packages: {e}"))?;
+        m.origin = self.origin.clone();
+        m.label = self.label.clone();
+        m.keep_snapshots = self.keep_snapshots.unwrap_or(10).min(1000);
+        m.max_delete = self.max_delete;
+        m.validate().map_err(|e| e.to_string())?;
+        Ok(m)
     }
 
     fn rsync(&self) -> Result<aptpod_mirror::rsync::RsyncMirror, String> {
@@ -154,11 +225,13 @@ impl MirrorDef {
             || !self.extras.is_empty()
             || self.keyring.is_some()
             || self.insecure
-            || !self.ignore_missing.is_empty();
+            || !self.ignore_missing.is_empty()
+            || self.resign_only();
         if http_only {
             return Err(
-                "dists, components, architectures, udebs, sources, extras, keyring, insecure and \
-                 ignore_missing are for http mirrors; rsync copies the whole source"
+                "dists, components, architectures, udebs, sources, extras, keyring, insecure, \
+                 ignore_missing and the resign fields are for http mirrors; rsync copies the \
+                 whole source"
                     .into(),
             );
         }
@@ -185,6 +258,16 @@ impl MirrorDef {
     }
 
     fn http(&self) -> Result<HttpMirror, String> {
+        if self.resign_only() {
+            return Err(
+                "packages, exclude_packages, origin, label and keep_snapshots are for resign mirrors"
+                    .into(),
+            );
+        }
+        self.http_source()
+    }
+
+    fn http_source(&self) -> Result<HttpMirror, String> {
         // Definitions are readable by every reader (config export): no
         // secrets in them.
         let authority = self
@@ -224,7 +307,15 @@ impl MirrorDef {
     }
 
     pub fn check(&self, cfg: &Config) -> Result<(), String> {
-        cfg.allows_mirror_path(&self.path)?;
+        if self.kind == Kind::Resign {
+            // The tree is a publish.
+            cfg.allows_publish_path(&self.path)?;
+            if cfg.signing.is_none() {
+                return Err("re-signed mirrors need [signing] in server.toml".into());
+            }
+        } else {
+            cfg.allows_mirror_path(&self.path)?;
+        }
         if let Some(s) = &self.schedule {
             crate::cron::Cron::parse(s)?;
         }

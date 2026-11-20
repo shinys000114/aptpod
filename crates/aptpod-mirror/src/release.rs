@@ -136,6 +136,37 @@ pub fn packages_files(text: &str) -> Result<Vec<PoolFile>, Error> {
     Ok(out)
 }
 
+/// A binary package as an upstream `Packages` list describes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageEntry {
+    pub name: String,
+    pub version: String,
+    pub arch: String,
+    pub file: PoolFile,
+}
+
+/// Packages of a `Packages` list with their files.
+pub fn packages_entries(text: &str) -> Result<Vec<PackageEntry>, Error> {
+    let files = packages_files(text)?;
+    let paras = parse_paragraphs(text).map_err(|e| Error::Upstream(format!("Packages: {e}")))?;
+    let mut out = Vec::with_capacity(files.len());
+    for (p, file) in paras.iter().zip(files) {
+        let field = |f: &str| {
+            p.get(f)
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .ok_or_else(|| Error::Upstream(format!("Packages: {} has no {f}", file.path)))
+        };
+        out.push(PackageEntry {
+            name: field("Package")?,
+            version: field("Version")?,
+            arch: field("Architecture")?,
+            file,
+        });
+    }
+    Ok(out)
+}
+
 /// Files of a `Sources` list (`Directory` + `Checksums-Sha256`).
 pub fn sources_files(text: &str) -> Result<Vec<PoolFile>, Error> {
     let mut out = Vec::new();

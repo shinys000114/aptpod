@@ -12,7 +12,7 @@
     <td>{{ p.dists }}</td>
     <td>{{ p.components }}</td>
     <td class="num">{{ p.packages }}</td>
-    <td>{% if p.managed %}<span class="tag">config file</span>{% endif %}</td>
+    <td>{% if p.managed %}<span class="tag">config file</span>{% endif %}{% if p.mirrored %}<span class="tag">mirror</span>{% endif %}</td>
   </tr>
   {% endfor %}
   </tbody>

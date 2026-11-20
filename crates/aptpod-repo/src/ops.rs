@@ -116,7 +116,7 @@ impl Repo {
         })
     }
 
-    fn check_path(&self, except: Option<&str>, layout: &Layout) -> Result<(), Error> {
+    pub(crate) fn check_path(&self, except: Option<&str>, layout: &Layout) -> Result<(), Error> {
         for (alias, other) in self.publishes()? {
             if Some(alias.as_str()) != except && paths_overlap(&layout.path, &other.path) {
                 return Err(Error::Invalid(format!(
@@ -732,7 +732,7 @@ impl Repo {
 }
 
 /// Refuses to write into a directory that already holds a repository tree.
-fn check_target(layout: &Layout, adopt: bool) -> Result<(), Error> {
+pub(crate) fn check_target(layout: &Layout, adopt: bool) -> Result<(), Error> {
     if adopt {
         return Ok(());
     }
@@ -819,7 +819,7 @@ fn apply_keep(
     }
 }
 
-fn cell_changes(old: &Cells, new: &Cells, pkgs: &BTreeMap<i64, Package>) -> Vec<Change> {
+pub(crate) fn cell_changes(old: &Cells, new: &Cells, pkgs: &BTreeMap<i64, Package>) -> Vec<Change> {
     let mut out = Vec::new();
     let keys: BTreeSet<&Cell> = old.keys().chain(new.keys()).collect();
     let empty = BTreeSet::new();
@@ -859,7 +859,7 @@ fn cell_changes(old: &Cells, new: &Cells, pkgs: &BTreeMap<i64, Package>) -> Vec<
     out
 }
 
-fn layout_diff(a: &Layout, b: &Layout) -> Vec<Change> {
+pub(crate) fn layout_diff(a: &Layout, b: &Layout) -> Vec<Change> {
     let (va, vb) = (
         serde_json::to_value(a).unwrap_or_default(),
         serde_json::to_value(b).unwrap_or_default(),

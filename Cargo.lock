@@ -151,6 +151,7 @@ name = "aptpod-mirror"
 version = "0.0.0"
 dependencies = [
  "aptpod-core",
+ "aptpod-repo",
  "axum",
  "flate2",
  "futures-util",

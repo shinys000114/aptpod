@@ -383,6 +383,8 @@ struct PublishRow {
     components: String,
     packages: usize,
     managed: bool,
+    /// Filled by the re-signed mirror of its name.
+    mirrored: bool,
 }
 
 struct MirrorRow {
@@ -449,6 +451,10 @@ async fn index(State(st): State<Arc<AppState>>, u: UiUser) -> Response {
             .into_iter()
             .map(|(alias, l, packages)| PublishRow {
                 managed: st.config_file.is_publish(&alias),
+                mirrored: crate::mirror_api::resign_owner(&st, &alias)
+                    .ok()
+                    .flatten()
+                    .is_some(),
                 path: l.path.display().to_string(),
                 dists: l.dists.join(", "),
                 components: l.components.join(", "),
@@ -560,6 +566,8 @@ struct PublishPage {
     alias: String,
     path: String,
     managed: bool,
+    /// The re-signed mirror that fills it.
+    mirror: Option<String>,
     dists: Vec<String>,
     components: Vec<String>,
     matrix: Vec<MatrixRow>,
@@ -594,6 +602,7 @@ async fn publish_page(
     render(&PublishPage {
         s: u.shell(),
         managed: st.config_file.is_publish(&alias),
+        mirror: crate::mirror_api::resign_owner(&st, &alias).ok().flatten(),
         path: layout.path.display().to_string(),
         dists: layout.dists.clone(),
         components: layout.components.clone(),

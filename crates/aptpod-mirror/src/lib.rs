@@ -6,6 +6,7 @@ pub mod cache;
 pub mod fetch;
 pub mod http;
 pub mod release;
+pub mod resign;
 pub mod rsync;
 
 /// Errors that stop a whole sync. Problems of one dist are reported in
@@ -16,6 +17,8 @@ pub enum Error {
     Core(#[from] aptpod_core::Error),
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Repo(#[from] aptpod_repo::Error),
     #[error("{0}")]
     Config(String),
     #[error("{0}")]

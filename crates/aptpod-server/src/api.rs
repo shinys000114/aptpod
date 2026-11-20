@@ -649,6 +649,7 @@ pub(crate) async fn create_publish(
 ) -> Res<Outcome> {
     caller.need(Role::Admin)?;
     crate::configfile::refuse(&st, "publish", &req.alias)?;
+    crate::mirror_api::refuse_mirrored(&st, &req.alias)?;
     st.cfg
         .allows_publish_path(&req.layout.path)
         .map_err(ApiError::invalid)?;
@@ -702,6 +703,7 @@ pub(crate) async fn add(
     Json(req): Json<AddReq>,
 ) -> Res<Outcome> {
     caller.need(Role::Publisher)?;
+    crate::mirror_api::refuse_mirrored(&st, &alias)?;
     if req.uploads.is_empty() {
         return Err(ApiError::invalid("no uploads given"));
     }

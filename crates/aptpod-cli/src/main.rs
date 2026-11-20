@@ -32,6 +32,8 @@ struct Cli {
     command: Cmd,
 }
 
+// Parsed once per run; the size of the variants does not matter.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Cmd {
     /// Logs in and saves a token in ~/.config/aptpod/credentials.toml.

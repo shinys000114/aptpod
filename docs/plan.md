@@ -228,7 +228,7 @@ Admin: publishes, mirrors, users, tokens, layout revisions.
 | P3 ✅ | aptpod-server + aptpod CLI: API, users/tokens/roles, single writer + jobs with resource keys + SSE, audit, layout revisions, TOML import/export, add from URLs (fetched by the CLI, then uploaded) + `--checksums`, systemd unit | CI uploads and every CLI command go through the server |
 | P4 | aptpod-mirror verbatim (HTTP, then rsync), scheduler | the reference PPA and Debian/Ubuntu mirrors run from aptpod with identical output |
 | P5 ✅ | Web UI: matrix, packages, upload/promote with preview, snapshots/diff/rollback, layout editor + history, mirrors, jobs, users/tokens | day-to-day work possible from a browser |
-| P6 | Re-signed mirrors | auto-replicated layout, filters, snapshot per sync |
+| P6 | Re-signed mirrors | auto-replicated layout, filters, snapshot per sync; apt verifies the result with our key (and not the upstream's) in containers |
 | P6.5 | Native Debian packaging: `debian/` (control, rules with vendored crates, changelog, copyright, systemd unit via debhelper), source package builds with `debuild`; CI builds it too | `debuild -us -uc` produces `aptpod` and `aptpod-server` .debs equivalent to the cargo-deb ones |
 | P7 | Migration of the reference host: import aptly's published trees (`dists` + `pool`, no aptly API needed), publish side by side, compare, switch the web server's symlinks, switch CI, move mirror jobs one by one, remove aptly and the old scripts | same paths and key, no client-visible change |
 
@@ -628,6 +628,77 @@ on pages, and a password change ending the session all work. File
 upload is covered by the HTTP test only (the browser tool cannot attach
 files). A password change ends the user's web sessions; API tokens stay
 until revoked. Job log lines are stamped in UTC.
+
+## P6 notes (re-signed mirrors)
+
+A mirror of `kind = "resign"` reads an upstream over HTTP like a verbatim
+one (Release verified with the upstream key, which is required:
+`insecure` is refused, since our key would vouch for unchecked content)
+and fills the publish of the mirror's name, created by the first sync,
+under `publish_roots` (the tree is a publish). Definitions need
+`[signing]` in server.toml. Fields: url, path, dists, components and
+architectures (empty: what the upstream lists), keyring, ignore_missing,
+parallel, retries, max_delete, schedule, enabled, plus `packages` /
+`exclude_packages` (the filter syntax of `rm`/`find`: globs,
+`name=version`, version conditions), `origin` / `label` (default: the
+upstream's) and `keep_snapshots` (default 10). udebs, sources and extras
+are not supported.
+
+Engine (`aptpod-mirror::resign`): per dist, Release and the best
+parseable variant of each selected `binary-<arch>` (and `binary-all`)
+index, checked against Release (restart on a change, as verbatim);
+stanzas filtered by name, version and architecture. Packages the
+repository already has (by sha256) are not fetched; the others are
+downloaded into `<data_dir>/mirrors/<name>/incoming/` (resume, retries,
+parallel) and taken into the store there (hard link), off the writer.
+Every downloaded `.deb` must be the package its stanza names (name,
+version, architecture), so an index cannot slip a file past a filter;
+the published stanzas are generated from the files, as for local
+packages. A file in the store without a row (a sync that stopped after
+ingesting) is re-read instead of fetched. One `syncfs`, then the single
+writer applies the whole state in one revision
+(`aptpod_repo::Repo::sync_mirror`): layout from what was read (dists in
+the configured order, components in upstream order, `only` where a
+component is not in every dist, architectures), every fetched dist's
+cells replaced, dists that failed this time kept as they were (or left
+out if never published). Pool paths are shared per component: the first
+dist that lists a path decides its content, a later dist with other
+content fails; a kept dist whose pool file got new content follows it
+(as `--replace` does). More removals than `max_delete` refuse the whole
+sync (`sync --prune` allows it once). A change gets the label
+`sync-<UTC time>`; older sync labels beyond `keep_snapshots` are
+dropped, the publish keeps no unlabelled history (`history_max_age = 0`),
+and a gc runs after labels were dropped (gc is repository-wide; packages
+ingested within the last hour are kept). An unchanged upstream gives no
+revision and no label.
+
+The publish refuses manual changes (add, rm, promote into it or `--move`
+out of it, prune-versions, layout, delete: kind `managed`, exit 4);
+snapshots, diff and rollback work, and the next sync brings it back to
+the upstream (logged as a warning) - disable the mirror to hold a
+rollback. `config export` leaves the publish out (the mirror makes it),
+`config import` refuses it. A publish of the same name that exists
+already needs `adopt` to be taken over; a re-signed mirror cannot turn
+into a verbatim one. Deleting the mirror leaves an ordinary publish.
+
+Differences from the upstream that clients see: our signature, Date and
+Valid-Until; `Suite` and `Codename` are the dist name (the reference
+upstream says `Suite: stable` in every dist; a per-dist suite is not
+modelled yet), stanzas as aptpod writes them (control fields of the
+file, then Filename, Size and hashes; fields an upstream adds to its
+index only, such as `Phased-Update-Percentage`, are lost). Storage: the
+store and the published trees need one filesystem for hard links;
+otherwise every package is stored twice and the copy happens while the
+writer publishes.
+
+Tests: `tests/resign.rs` (layout, our signature and not the upstream's,
+a rerun that fetches no pool file, snapshots and their retention, a
+rollback undone by the next sync, filters, an index stanza naming
+another package, a failed dist keeping its contents, ignored missing
+files, the brake, interruption, a pool clash between dists), the
+server end-to-end test (definition rules, sync job, refusals, export,
+delete), and apt in four images installing from the re-signed tree with
+our key and refusing it with the upstream key.
 
 ## Testing
 

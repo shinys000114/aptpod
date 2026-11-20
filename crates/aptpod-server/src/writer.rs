@@ -65,6 +65,26 @@ impl Writer {
         wait.await.map_err(|_| Stopped)
     }
 
+    /// [`Writer::run`] for plain (non-tokio) threads, e.g. mirror workers.
+    pub fn run_blocking<T, F>(&self, f: F) -> Result<T, Stopped>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut Repo) -> T + Send + 'static,
+    {
+        let (done, wait) = mpsc::channel();
+        let task: Task = Box::new(move |repo| {
+            let _ = done.send(f(repo));
+        });
+        {
+            let tx = self.tx.lock().unwrap_or_else(|e| e.into_inner());
+            tx.as_ref()
+                .ok_or(Stopped)?
+                .send(task)
+                .map_err(|_| Stopped)?;
+        }
+        wait.recv().map_err(|_| Stopped)
+    }
+
     /// Lets queued jobs finish, then stops the thread.
     pub fn shutdown(&self) {
         self.tx.lock().unwrap_or_else(|e| e.into_inner()).take();

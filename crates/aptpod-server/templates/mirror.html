@@ -7,11 +7,13 @@
   {% if !finished.is_empty() %} · finished {{ finished }}{% endif %}
   {% if !next_run.is_empty() %} · next run {{ next_run }}{% endif %}</p>
 {% if !summary.is_empty() %}<p>{{ summary }}</p>{% endif %}
+{% if resign %}<p>Re-signed into publish <a href="{{ s.base }}p/{{ name }}">{{ name }}</a>.</p>{% endif %}
 
 {% if can_publish %}
 <div class="row">
   <button hx-post="{{ s.base }}mirrors/{{ name }}/sync" hx-target="#mirror-result">Sync now</button>
-  {% if can_admin && !prune %}<button class="danger" hx-post="{{ s.base }}mirrors/{{ name }}/sync" hx-vals='{"prune": "1"}' hx-target="#mirror-result" hx-confirm="Delete unreferenced files this once?">Sync and prune</button>{% endif %}
+  {% if can_admin && resign %}<button class="danger" hx-post="{{ s.base }}mirrors/{{ name }}/sync" hx-vals='{"prune": "1"}' hx-target="#mirror-result" hx-confirm="Apply this sync even if it removes more packages than max_delete?">Sync, allow mass removal</button>{% endif %}
+  {% if can_admin && !prune && !resign %}<button class="danger" hx-post="{{ s.base }}mirrors/{{ name }}/sync" hx-vals='{"prune": "1"}' hx-target="#mirror-result" hx-confirm="Delete unreferenced files this once?">Sync and prune</button>{% endif %}
   <button hx-post="{{ s.base }}mirrors/{{ name }}/stop" hx-target="#mirror-result">Stop</button>
   <button hx-post="{{ s.base }}mirrors/{{ name }}/check" hx-target="#mirror-result">Check upstream</button>
 </div>

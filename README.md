@@ -8,10 +8,10 @@ An apt repository server written from scratch in Rust:
   kept) or re-signed with your key, with the upstream layout replicated,
 - a REST API, a web UI and the `aptpod` CLI, scheduled jobs.
 
-**Status: pre-alpha.** Local repositories and verbatim mirrors (HTTP and
-rsync, scheduled) work through the server, the CLI and the web UI (open
-the server's address in a browser and log in); re-signed mirrors are
-not there yet. See
+**Status: pre-alpha.** Local repositories, verbatim mirrors (HTTP and
+rsync) and re-signed mirrors (HTTP, into a publish signed with your key,
+a snapshot per sync), all schedulable, work through the server, the CLI
+and the web UI (open the server's address in a browser and log in). See
 [docs/plan.md](docs/plan.md).
 
 ## Quick start
@@ -48,6 +48,7 @@ repository changed since the preview.
 | users (admin) | `aptpod user add bob --role publisher`, `aptpod user ls` |
 | watch jobs | `aptpod jobs --follow`, `aptpod log <job> -f` |
 | mirror a remote repository (upstream signature kept) | `aptpod mirror create debian --url http://deb.example.org/debian/ --path /srv/mirror/debian --dist bookworm --arch amd64 --keyring debian.gpg`, `aptpod mirror sync debian --wait` |
+| re-sign a remote repository with your key (needs `[signing]`) | `aptpod mirror create vendor --kind resign --url http://apt.example.org/ --path /srv/apt/vendor --dist noble --keyring vendor.gpg --exclude-package '*-dbg'`, `aptpod mirror sync vendor --wait`; the publish `vendor` follows the upstream, `aptpod rollback vendor sync-...` until the next sync |
 | maintenance (admin) | `aptpod gc`, `aptpod repair` |
 
 Roles: `reader` (read only), `publisher` (packages, snapshots, rollback),

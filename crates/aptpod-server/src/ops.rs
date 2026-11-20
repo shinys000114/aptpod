@@ -133,6 +133,7 @@ pub(crate) async fn rm(
     Json(req): Json<RmReq>,
 ) -> Res<Outcome> {
     caller.need(Role::Publisher)?;
+    crate::mirror_api::refuse_mirrored(&st, &alias)?;
     if req.keep.is_none() && req.versions.is_none() {
         need_selection(&req.packages, req.all, "rm")?;
     }
@@ -190,6 +191,10 @@ pub(crate) async fn promote(
     need_selection(&req.packages, req.all, "promote")?;
     let f = filter(&req.packages, req.versions.as_deref(), req.arch.as_deref())?;
     let to_publish = req.to_publish.unwrap_or_else(|| alias.clone());
+    crate::mirror_api::refuse_mirrored(&st, &to_publish)?;
+    if req.move_ {
+        crate::mirror_api::refuse_mirrored(&st, &alias)?;
+    }
     let to_component = req.to_component.unwrap_or_else(|| req.component.clone());
     let resource = if to_publish == alias {
         format!("publish:{alias}")
@@ -239,6 +244,7 @@ async fn prune(
     Json(req): Json<PruneReq>,
 ) -> Res<Outcome> {
     caller.need(Role::Publisher)?;
+    crate::mirror_api::refuse_mirrored(&st, &alias)?;
     let f = filter(&req.packages, req.versions.as_deref(), req.arch.as_deref())?;
     let resource = format!("publish:{alias}");
     plan_job(
@@ -317,6 +323,7 @@ pub(crate) async fn set_layout(
 ) -> Res<Outcome> {
     caller.need(Role::Admin)?;
     crate::configfile::refuse(&st, "publish", &alias)?;
+    crate::mirror_api::refuse_mirrored(&st, &alias)?;
     st.cfg
         .allows_publish_path(&req.layout.path)
         .map_err(ApiError::invalid)?;
@@ -354,6 +361,7 @@ async fn delete_publish(
 ) -> Res<Outcome> {
     caller.need(Role::Admin)?;
     crate::configfile::refuse(&st, "publish", &alias)?;
+    crate::mirror_api::refuse_mirrored(&st, &alias)?;
     let resource = format!("publish:{alias}");
     plan_job(
         &st,
@@ -516,8 +524,18 @@ pub(crate) struct ConfigView {
 
 async fn config_export(State(st): St, caller: Caller) -> Res<ConfigView> {
     caller.need(Role::Reader)?;
-    let publishes = read(&st, |r| r.publishes()).await?.into_iter().collect();
-    let mirrors = st.auth.mirrors()?.into_iter().collect();
+    let mirrors: BTreeMap<String, crate::mirrors::MirrorDef> =
+        st.auth.mirrors()?.into_iter().collect();
+    // A re-signed mirror's publish is made by the mirror, not configured.
+    let publishes = read(&st, |r| r.publishes())
+        .await?
+        .into_iter()
+        .filter(|(a, _)| {
+            mirrors
+                .get(a)
+                .is_none_or(|d| d.kind != crate::mirrors::Kind::Resign)
+        })
+        .collect();
     Ok(Json(ConfigView { publishes, mirrors }))
 }
 
@@ -608,6 +626,27 @@ pub(crate) async fn import(
     commit: Commit,
 ) -> Result<Outcome, ApiError> {
     let pubs = config.publishes;
+    // Re-signed mirrors (as they will be after the import) fill the
+    // publish of their name; it cannot be configured as well.
+    let mut resigned: BTreeSet<String> = st
+        .auth
+        .mirrors()?
+        .into_iter()
+        .filter(|(_, d)| d.kind == crate::mirrors::Kind::Resign)
+        .map(|(n, _)| n)
+        .collect();
+    for (n, d) in &config.mirrors {
+        if d.kind == crate::mirrors::Kind::Resign {
+            resigned.insert(n.clone());
+        } else {
+            resigned.remove(n);
+        }
+    }
+    if let Some(a) = pubs.keys().find(|a| resigned.contains(*a)) {
+        return Err(ApiError::invalid(format!(
+            "publish {a:?} is filled by the re-signed mirror of that name; leave it out"
+        )));
+    }
     // Publish paths against the mirrors as they will be after the import.
     let mut mirror_paths: BTreeMap<String, std::path::PathBuf> = st
         .auth
@@ -618,6 +657,7 @@ pub(crate) async fn import(
     for (n, d) in &config.mirrors {
         mirror_paths.insert(n.clone(), d.path.clone());
     }
+    let skip_warn = resigned.clone();
     for (a, l) in &pubs {
         if let Some((m, _)) = mirror_paths
             .iter()
@@ -655,7 +695,10 @@ pub(crate) async fn import(
     let out = crate::api::plan_job_as(st, user, "import", resource, commit, vec![], move |r| {
         let existing: BTreeSet<String> = r.publishes()?.into_iter().map(|(a, _)| a).collect();
         let mut plan = Plan::default();
-        for a in existing.iter().filter(|a| !pubs.contains_key(*a)) {
+        for a in existing
+            .iter()
+            .filter(|a| !pubs.contains_key(*a) && !skip_warn.contains(*a))
+        {
             plan.warnings
                 .push(format!("publish {a:?} is not in the file; left unchanged"));
         }

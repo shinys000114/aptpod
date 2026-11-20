@@ -1627,3 +1627,106 @@ fn config_file_workflow() {
     admin.ok(&["mirror", "delete", "fm"]);
     assert!(srv.stop().success());
 }
+
+/// A re-signed mirror through the server: definition rules, a sync that
+/// creates the publish signed with the server's key and a snapshot, the
+/// publish refusing manual changes, export, and delete leaving the publish.
+#[test]
+fn resign_mirrors() {
+    let Some(ours) = GpgKey::new() else {
+        return;
+    };
+    let up = tempfile::tempdir().unwrap();
+    let Some((archive, up_public, _up_key)) = signed_upstream(up.path()) else {
+        return;
+    };
+    let url = static_server(archive, Duration::ZERO);
+    let Some((dir, bin, cfg)) = prepare_extra(&ours.signing_toml(&ours.fpr)) else {
+        return;
+    };
+    let d = dir.path();
+    let srv = Server::start(&bin, &cfg);
+    let cli = |name: &str| Cli {
+        creds: d.join(format!("{name}.toml")),
+        url: srv.url.clone(),
+    };
+    let (admin, ci) = (cli("admin"), cli("ci"));
+    login(&admin, "admin");
+    login(&ci, "ci");
+    let keyfile = d.join("upstream.gpg");
+    std::fs::write(&keyfile, &up_public).unwrap();
+    let kf = keyfile.display().to_string();
+    let tree = d.join("trees/rs");
+    let tp = tree.display().to_string();
+    let base = [
+        "mirror", "create", "rs", "--kind", "resign", "--url", &url, "--path", &tp, "--dist",
+        "noble",
+    ];
+    let with = |extra: &[&str]| -> Vec<String> {
+        base.iter().chain(extra).map(|s| s.to_string()).collect()
+    };
+    let run = |c: &Cli, args: &[String], code: Option<i32>| -> String {
+        let a: Vec<&str> = args.iter().map(String::as_str).collect();
+        match code {
+            None => c.ok(&a),
+            Some(n) => c.fails(&a, n),
+        }
+    };
+    // Unverified content is never signed with our key.
+    let err = run(&admin, &with(&["--insecure"]), Some(1));
+    assert!(err.contains("no insecure"), "{err}");
+    // The tree is a publish: publish_roots, not mirror_roots.
+    let outside = d.join("elsewhere").display().to_string();
+    let mut args = with(&["--keyring", &kf]);
+    args[8] = outside;
+    let err = run(&admin, &args, Some(1));
+    assert!(err.contains("publish root"), "{err}");
+    run(
+        &admin,
+        &with(&["--keyring", &kf, "--keep-snapshots", "3"]),
+        None,
+    );
+
+    let out = ci.ok(&["mirror", "sync", "rs", "--wait"]);
+    assert!(out.contains("revision #") && out.contains("done:"), "{out}");
+    let rows: Vec<Value> = serde_json::from_str(&ci.ok(&["ls", "rs", "--json"])).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["name"], "sched-pkg");
+    let ir = std::fs::read(tree.join("dists/noble/InRelease")).unwrap();
+    let k = |b: &[u8]| aptpod_core::verify::Keyring::from_bytes(b).unwrap();
+    aptpod_core::verify::verify_inrelease(&k(&ours.public), &ir).expect("our signature");
+    assert!(aptpod_core::verify::verify_inrelease(&k(&up_public), &ir).is_err());
+    let (code, snaps) = api(
+        &srv.url,
+        &ci.token(),
+        "GET",
+        "/api/v1/publishes/rs/snapshots",
+        None,
+    );
+    assert_eq!(code, 200);
+    assert!(
+        snaps[0]["label"].as_str().unwrap().starts_with("sync-"),
+        "{snaps}"
+    );
+    let out = ci.ok(&["mirror", "sync", "rs", "--wait"]);
+    assert!(out.contains("publish unchanged"), "{out}");
+
+    // Filled by the mirror: manual changes are refused (managed, exit 4).
+    let debs = d.join("debs");
+    std::fs::create_dir_all(&debs).unwrap();
+    let deb = build_deb(&debs, "local-pkg", "1.0").display().to_string();
+    let err = ci.fails(&["add", "rs", "main", &deb, "-d", "noble", "-y"], 4);
+    assert!(err.contains("filled by mirror"), "{err}");
+    let err = ci.fails(&["rm", "rs", "main", "sched-pkg", "-y"], 4);
+    assert!(err.contains("filled by mirror"), "{err}");
+    // Export leaves the publish out (the mirror makes it).
+    let exported = admin.ok(&["config", "export"]);
+    assert!(exported.contains("[mirrors.rs]") && exported.contains("kind = \"resign\""));
+    assert!(!exported.contains("[publishes.rs]"), "{exported}");
+
+    // Deleting the mirror leaves an ordinary publish.
+    let out = admin.ok(&["mirror", "delete", "rs"]);
+    assert!(out.contains("publish rs stays"), "{out}");
+    ci.ok(&["add", "rs", "main", &deb, "-d", "noble", "-y"]);
+    assert!(srv.stop().success());
+}
