@@ -148,7 +148,7 @@ fn def_toml(view: &Value) -> Result<String, CliError> {
         }
         o.retain(|_, v| !v.is_null());
     }
-    toml::to_string(&def).map_err(|e| CliError::other(format!("definition as TOML: {e}")))
+    toml::to_string_pretty(&def).map_err(|e| CliError::other(format!("definition as TOML: {e}")))
 }
 
 fn parse_def(text: &str, what: &str) -> Result<Value, CliError> {

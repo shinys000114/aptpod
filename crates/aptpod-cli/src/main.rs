@@ -711,7 +711,7 @@ fn preview_apply(
 }
 
 fn layout_toml(layout: &Value) -> Result<String, CliError> {
-    toml::to_string(layout).map_err(|e| CliError::other(format!("layout as TOML: {e}")))
+    toml::to_string_pretty(layout).map_err(|e| CliError::other(format!("layout as TOML: {e}")))
 }
 
 fn parse_layout(text: &str, what: &str) -> Result<Value, CliError> {

@@ -722,11 +722,19 @@ fn operations() {
     // Layout as TOML: set from stdin (dropping a dist with packages is
     // blocked without --force), edit through $EDITOR.
     let layout = viewer.ok(&["publish", "get", "t"]);
-    assert!(
-        layout.contains("dists = [\"jammy\", \"noble\"]"),
-        "{layout}"
-    );
-    let no_noble = layout.replace("dists = [\"jammy\", \"noble\"]", "dists = [\"jammy\"]");
+    let with_dists = |text: &str, dists: &[&str]| {
+        let mut t: toml::Table = toml::from_str(text).unwrap();
+        t.insert(
+            "dists".into(),
+            toml::Value::Array(dists.iter().map(|d| toml::Value::from(*d)).collect()),
+        );
+        toml::to_string(&t).unwrap()
+    };
+    let parsed: toml::Table = toml::from_str(&layout).unwrap();
+    assert_eq!(parsed["dists"].as_array().unwrap().len(), 2, "{layout}");
+    // Fields come in the server's order, not sorted.
+    assert!(layout.starts_with("path = "), "{layout}");
+    let no_noble = with_dists(&layout, &["jammy"]);
     assert_eq!(
         ci.run(&["publish", "set", "t", "-", "-y"], &no_noble)
             .status
@@ -735,7 +743,7 @@ fn operations() {
     );
     let out = admin.run(&["publish", "set", "t", "-", "-y"], &no_noble);
     assert_eq!(out.status.code(), Some(5), "{}", text(&out));
-    let no_jammy = layout.replace("dists = [\"jammy\", \"noble\"]", "dists = [\"noble\"]");
+    let no_jammy = with_dists(&layout, &["noble"]);
     let out = admin.run(&["publish", "set", "t", "-", "-y"], &no_jammy);
     assert!(out.status.success(), "{}", text(&out));
     assert!(!t.join("dists/jammy").exists());
@@ -927,7 +935,12 @@ fn accounts_config_events() {
         exported.contains("[publishes.a]") && exported.contains("[publishes.b]"),
         "{exported}"
     );
-    let edited = exported.replace("dists = [\"jammy\", \"noble\"]", "dists = [\"noble\"]");
+    let mut cfg: toml::Table = toml::from_str(&exported).unwrap();
+    cfg["publishes"]["b"]
+        .as_table_mut()
+        .unwrap()
+        .insert("dists".into(), toml::Value::Array(vec!["noble".into()]));
+    let edited = toml::to_string(&cfg).unwrap();
     let out = admin.run(&["config", "import", "-", "-y"], &edited);
     assert!(out.status.success(), "{}", text(&out));
     let hist_a = admin.ok(&["history", "a"]);

@@ -511,8 +511,31 @@ not replayed; `status_dir` gets `<name>.json`, `<name>.svg` (badge text
 as the reference tool's: "synced YYYYmmddHHMMSS") and `index.json` on
 every start/end/definition change; `aptpod mirror check` (Release and
 signature, or an rsync listing), `aptpod mirror sync --all [--wait]`.
-P4e (side-by-side on the reference host) is left for when the server is
-installed there. Next: P4c rsync kinds, P4d scheduler and
+P4e (side by side on the reference host, test directory only, nothing
+switched): aptpod-server 0.0.1-p4e installed from the .deb, mirrors seeded
+by hard links from the current trees (the service user cannot change the
+other tool's files: new data always goes to new files renamed into
+place). HTTP PPA (7 dists x 18 components, arm64): first sync 88 s (every
+present file hashed once), then about 1 s; 0 files to fetch, 26 listed
+404s ignored, 1377 stale files of the old tool reported, not deleted
+(adopted); all 399 index files byte-identical to the old tool's copy; apt
+update of all dists with signed-by the upstream key clean, a 34 MB
+package downloaded and verified. rsync-apt (debian-security, 37713
+files): two passes and --prune run, file list identical to the old
+tool's tree, only the trace file differs. The scheduler fired at the
+configured minute in Asia/Seoul; status JSON and badge as intended.
+
+Found and fixed on the way: the trace file was rewritten in place (it can
+be a shared hard link; now a new file renamed over it); journald got
+colour codes; mergerfs (the reference host's /mnt/hdd) has no
+RENAME_EXCHANGE (the two-rename fallback is used), does not really link
+empty files, and a mix of linked and written index files in fresh
+staging directories failed with EACCES: staging directories are now
+created before the parallel phase, small indices are written instead of
+linked, and permission/not-found errors on file creation are retried once.
+Not yet re-verified on the host after that last fix. The upstream PPA
+flips between two Release states within minutes (dists alternate between
+changed and unchanged, 21 vs 26 listed 404s). Next: P4c rsync kinds, P4d scheduler and
 public status.
 
 ## Performance notes

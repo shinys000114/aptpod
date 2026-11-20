@@ -19,7 +19,7 @@ use crate::fetch::{FetchError, Http, PART, join_url, sha256_file, sha256_hex};
 use crate::release::{
     PoolFile, Release, VARIANTS, decompress, packages_files, parseable, sources_files, variant_path,
 };
-use crate::{Error, safe_rel};
+use crate::{Error, retry_fs, safe_rel};
 
 /// What to mirror.
 #[derive(Debug, Clone)]
@@ -580,6 +580,24 @@ fn stage_dist(m: &HttpMirror, ctx: &Ctx, dist: &str, staging: &Path) -> Result<S
         })
         .collect();
     let items: Vec<&String> = todo.iter().collect();
+    // Directories first, one at a time: creating the same directories from
+    // several threads at once is racy on some FUSE filesystems (mergerfs).
+    let mut dirs: BTreeSet<PathBuf> = BTreeSet::new();
+    for path in &items {
+        let parent = staging
+            .join(path)
+            .parent()
+            .expect("has parent")
+            .to_path_buf();
+        if by_hash {
+            dirs.insert(parent.join("by-hash/SHA256"));
+        }
+        dirs.insert(parent);
+    }
+    for d in &dirs {
+        retry_fs(|| fs::create_dir_all(d))
+            .map_err(|e| DistErr::Fatal(format!("{}: {e}", d.display())))?;
+    }
     let fetched = par_map(
         &items,
         m.parallel,
@@ -589,7 +607,11 @@ fn stage_dist(m: &HttpMirror, ctx: &Ctx, dist: &str, staging: &Path) -> Result<S
             let sep = if dir.is_empty() { "" } else { "/" };
             let out = staging.join(path);
             let mkdir = |p: &Path| {
-                fs::create_dir_all(p.parent().expect("has parent"))
+                retry_fs(|| fs::create_dir_all(p.parent().expect("has parent")))
+                    .map_err(|e| DistErr::Fatal(format!("{}: {e}", p.display())))
+            };
+            let write = |p: &Path, data: &[u8]| {
+                retry_fs(|| fs::write(p, data))
                     .map_err(|e| DistErr::Fatal(format!("{}: {e}", p.display())))
             };
             let by_hash_copy = |data_at: &Path| -> Result<(), DistErr> {
@@ -609,9 +631,11 @@ fn stage_dist(m: &HttpMirror, ctx: &Ctx, dist: &str, staging: &Path) -> Result<S
                 && sha256_hex(&data) == entry.sha256
             {
                 mkdir(&out)?;
-                if fs::hard_link(&local, &out).is_err() {
-                    fs::write(&out, &data)
-                        .map_err(|e| DistErr::Fatal(format!("{}: {e}", out.display())))?;
+                // Link big files (no second copy); small ones are just
+                // written: a link saves nothing there, and some FUSE
+                // filesystems do not really link empty files.
+                if data.len() < (1 << 20) || fs::hard_link(&local, &out).is_err() {
+                    write(&out, &data)?;
                 }
                 by_hash_copy(&out)?;
                 return Ok(Some((data, true)));
@@ -640,8 +664,7 @@ fn stage_dist(m: &HttpMirror, ctx: &Ctx, dist: &str, staging: &Path) -> Result<S
                 return Err(DistErr::Changed(format!("{path} does not match Release")));
             }
             mkdir(&out)?;
-            fs::write(&out, &data)
-                .map_err(|e| DistErr::Fatal(format!("{}: {e}", out.display())))?;
+            write(&out, &data)?;
             by_hash_copy(&out)?;
             Ok(Some((data, false)))
         },

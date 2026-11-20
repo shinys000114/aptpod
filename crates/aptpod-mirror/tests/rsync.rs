@@ -167,6 +167,14 @@ fn apt_mode_two_passes_trace_and_deletes() {
             .all(|l| !l.contains("Release") && !l.contains("Packages"))
     );
     assert!(lines[split..].iter().any(|l| l.contains("InRelease")));
+    // The trace file is replaced, not rewritten: a hard link to it (as in a
+    // tree seeded from another mirror) keeps its old content.
+    let trace = dest.join("project/trace/mirror.example");
+    let old = out.path().join("old-trace");
+    std::fs::hard_link(&trace, &old).unwrap();
+    std::thread::sleep(Duration::from_millis(1100));
+    ok(&m, &dest);
+    assert_ne!(std::fs::read(&trace).unwrap(), std::fs::read(&old).unwrap());
     let mut expect = without(tree(&up.root), "Archive-Update-in-Progress-");
     expect.push("project/trace/mirror.example".into());
     expect.sort();

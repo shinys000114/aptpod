@@ -386,7 +386,7 @@ pub fn run(c: &Client, cmd: OpsCmd, json: bool) -> Result<(), CliError> {
             if json {
                 print_json(&cfg);
             } else {
-                let text = toml::to_string(&cfg)
+                let text = toml::to_string_pretty(&cfg)
                     .map_err(|e| CliError::other(format!("config as TOML: {e}")))?;
                 print!("{text}");
             }

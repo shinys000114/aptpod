@@ -211,7 +211,7 @@ impl Http {
     ) -> Result<Downloaded, FetchError> {
         let part = part_path(dest);
         if let Some(dir) = dest.parent() {
-            fs::create_dir_all(dir)
+            crate::retry_fs(|| fs::create_dir_all(dir))
                 .map_err(|e| FetchError::Local(format!("{}: {e}", dir.display())))?;
         }
         let mut attempt = 0;
@@ -326,7 +326,7 @@ impl Http {
             }
             fs::OpenOptions::new().append(true).open(part).map_err(io)?
         } else {
-            let f = fs::File::create(part).map_err(io)?;
+            let f = crate::retry_fs(|| fs::File::create(part)).map_err(io)?;
             // Reserve the space up front (fewer fragments when several
             // downloads write at once, e.g. on a disk); KEEP_SIZE leaves
             // the length alone, so resuming still reads how far we got.

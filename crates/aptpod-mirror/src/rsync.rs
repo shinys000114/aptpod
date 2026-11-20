@@ -190,12 +190,30 @@ pub fn sync(m: &RsyncMirror, ctx: &Ctx) -> Result<RsyncReport, Error> {
         && let Some(h) = &m.trace_host
     {
         let trace = ctx.dest.join("project/trace").join(h);
-        std::fs::create_dir_all(trace.parent().expect("has parent"))?;
         let now = time::OffsetDateTime::now_utc();
         let fmt = time::macros::format_description!(
             "[weekday repr:short] [month repr:short] [day padding:space] [hour]:[minute]:[second] [year]"
         );
-        std::fs::write(&trace, format!("{}\n", now.format(fmt).expect("formats")))?;
+        // A new file renamed into place: never rewrite the old inode (it
+        // may be shared, e.g. a hard link of another tree) and never leave
+        // a half-written trace.
+        let at = |e: std::io::Error| {
+            Error::Io(std::io::Error::new(
+                e.kind(),
+                format!("{}: {e}", trace.display()),
+            ))
+        };
+        std::fs::create_dir_all(trace.parent().expect("has parent")).map_err(at)?;
+        let tmp = trace.with_file_name(format!(".{h}.aptpod-tmp-{}", std::process::id()));
+        std::fs::write(&tmp, format!("{}\n", now.format(fmt).expect("formats")))
+            .and_then(|()| {
+                std::fs::set_permissions(&tmp, std::os::unix::fs::PermissionsExt::from_mode(0o644))
+            })
+            .and_then(|()| std::fs::rename(&tmp, &trace))
+            .map_err(|e| {
+                let _ = std::fs::remove_file(&tmp);
+                at(e)
+            })?;
     }
     remove_update_markers(ctx.dest, ctx.log);
     report.ok = true;

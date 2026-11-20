@@ -45,6 +45,24 @@ pub fn safe_rel(p: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// Runs a filesystem call, once more after a moment if it fails with a
+/// permission or not-found error: FUSE union filesystems can briefly report
+/// those while they copy a directory to another branch.
+pub(crate) fn retry_fs<T>(mut f: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    match f() {
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotFound
+            ) =>
+        {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            f()
+        }
+        r => r,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
