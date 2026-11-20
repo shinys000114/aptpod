@@ -174,4 +174,12 @@ pub struct Applied {
     /// Dists written per publish.
     pub published: Vec<(String, String)>,
     pub pool_removed: usize,
+    /// Pool files copied from the store instead of hard-linked (store and
+    /// tree on different filesystems or mounts).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub pool_copied: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }

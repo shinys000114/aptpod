@@ -289,6 +289,7 @@ fn serve(cfg: Config) -> Result<(), String> {
         Ok(_) => {}
         Err(e) => tracing::error!("repair failed: {e}; the published trees may be behind"),
     }
+    check_links(&data, &cfg.publish_roots);
     let reader = Repo::open_reader(&data).map_err(|e| format!("repository: {e}"))?;
 
     let uploads = data.join("uploads");
@@ -390,6 +391,35 @@ async fn shutdown_signal(state: Arc<api::AppState>) {
     }
     tracing::info!("shutting down");
     state.stopping.send_replace(true);
+}
+
+/// Warns about publish roots the store cannot hard-link into: every
+/// published package is then stored twice. Under systemd a
+/// `StateDirectory=` bind mount alone is enough to break links on one
+/// filesystem.
+fn check_links(data: &std::path::Path, roots: &[std::path::PathBuf]) {
+    let probe = data.join(".link-probe");
+    if std::fs::write(&probe, b"").is_err() {
+        return;
+    }
+    for root in roots.iter().filter(|r| r.is_dir()) {
+        let target = root.join(format!(".aptpod-link-probe-{}", std::process::id()));
+        let _ = std::fs::remove_file(&target);
+        match std::fs::hard_link(&probe, &target) {
+            Ok(()) => {
+                let _ = std::fs::remove_file(&target);
+            }
+            Err(e) if e.raw_os_error() == Some(18) => tracing::warn!(
+                "publish root {}: no hard links from {} (different filesystem or mount): \
+                 published packages are copied, so stored twice",
+                root.display(),
+                data.join("store").display()
+            ),
+            // Not writable now (e.g. permissions): publishing will say so.
+            Err(_) => {}
+        }
+    }
+    let _ = std::fs::remove_file(&probe);
 }
 
 #[cfg(test)]

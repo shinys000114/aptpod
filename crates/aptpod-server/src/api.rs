@@ -600,15 +600,28 @@ where
             let job_id = job.id();
             let res = repo.apply(&plan, &user);
             let summary = match &res {
-                Ok(a) => Ok(format!(
-                    "{} change(s); {}",
-                    view.changes.len(),
-                    a.revisions
-                        .iter()
-                        .map(|(alias, rev)| format!("{alias} #{rev}"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )),
+                Ok(a) => {
+                    let mut s = format!(
+                        "{} change(s); {}",
+                        view.changes.len(),
+                        a.revisions
+                            .iter()
+                            .map(|(alias, rev)| format!("{alias} #{rev}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                    if a.pool_copied > 0 {
+                        tracing::warn!(
+                            "{} pool file(s) copied instead of hard-linked from the store",
+                            a.pool_copied
+                        );
+                        s.push_str(&format!(
+                            "; {} pool file(s) copied, not linked (see the server log)",
+                            a.pool_copied
+                        ));
+                    }
+                    Ok(s)
+                }
                 Err(e) => Err(e.to_string()),
             };
             job.finish(summary.as_deref().map_err(String::as_str))?;

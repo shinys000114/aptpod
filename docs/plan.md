@@ -582,8 +582,9 @@ process; `examples/bench_add` in aptpod-repo).
 - Repository adds: files are read and hashed in parallel (300 x 1 MiB:
   1.27 s to 0.32 s); server uploads are hard-linked into the store instead
   of copied. Publishing hard-links store files into the tree, which
-  needs the data dir and the publish roots on one filesystem; otherwise
-  every package is stored twice (copied).
+  needs the data dir and the publish roots on one filesystem and mount
+  (see the P6 notes on systemd's StateDirectory); otherwise every
+  package is stored twice (copied, with a warning).
 
 Limits of these numbers: the link sample is one 79 MB file per mode (about
 1.4 s, so TCP slow start weighs in); the Debian/Ubuntu archives go over
@@ -690,6 +691,31 @@ index only, such as `Phased-Update-Percentage`, are lost). Storage: the
 store and the published trees need one filesystem for hard links;
 otherwise every package is stored twice and the copy happens while the
 writer publishes.
+
+On the reference host (test key, test directory on the root filesystem,
+nothing switched): the reference PPA (7 dists x 18 components, arm64)
+re-signed. First sync from the local verbatim copy served on localhost
+(so the vendor is not asked for 21 GB again): 5005 files, 20.8 GB, in
+124 s (67 s download, the rest syncfs and publishing); 26 listed 404s
+ignored as in the verbatim mirror. All 5312 stanzas match the upstream
+indices in name, version, architecture and sha256 per dist and
+component, and every other field too (we add SHA512). InRelease
+verifies with our key and not the upstream's (gpgv); apt in trixie and
+jammy containers updates and downloads arm64 packages with signed-by
+our key, and refuses the tree with the upstream key. A rerun: no
+download, no revision (4 s against the localhost copy); the URL then
+switched to the real upstream: 1 s, nothing fetched, unchanged.
+
+Found there: the packaged unit had `StateDirectory=aptpod`, and systemd
+bind-mounts the state directory into the service's mount namespace;
+hard links from the store into a publish root then fail with EXDEV
+although both are on one filesystem, so every package was silently
+copied (20 GB twice, 53 s of publishing on the writer). The unit no
+longer sets it (the postinst creates `/var/lib/aptpod`); the same
+publish then took 5 s with every pool file linked. This hit local
+publishes too. Now the server warns at start for a publish root it
+cannot link into, and an apply that copied pool files says so in its
+job summary and in a mirror's report.
 
 Tests: `tests/resign.rs` (layout, our signature and not the upstream's,
 a rerun that fetches no pool file, snapshots and their retention, a

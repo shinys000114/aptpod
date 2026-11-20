@@ -12,8 +12,10 @@ ExecStart=/usr/bin/aptpod-server --config /etc/aptpod/server.toml
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=10s
-StateDirectory=aptpod
-StateDirectoryMode=0750
+# No StateDirectory=: systemd would bind-mount /var/lib/aptpod into the
+# service's namespace, and hard links from the store into publish roots on
+# the same filesystem would fail (packages copied, stored twice). The
+# postinst creates the directory.
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=full

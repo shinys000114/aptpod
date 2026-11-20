@@ -354,6 +354,11 @@ impl Repo {
             return Ok(report);
         }
         let applied = self.apply(&plan, author)?;
+        if applied.pool_copied > 0 {
+            report
+                .warnings
+                .push(copied_warning(applied.pool_copied, &s.path));
+        }
         report.revision = applied.revisions.first().map(|(_, r)| *r);
         report.published = applied.published.into_iter().map(|(_, d)| d).collect();
 
@@ -399,4 +404,14 @@ impl Repo {
         report.dropped_snapshots = old_syncs;
         Ok(report)
     }
+}
+
+/// Pool files were copied from the store instead of hard-linked.
+pub fn copied_warning(n: usize, tree: &std::path::Path) -> String {
+    format!(
+        "{n} pool file(s) were copied into {} instead of hard-linked from the store \
+         (different filesystem or mount; under systemd, a StateDirectory bind mount): \
+         each is stored twice",
+        tree.display()
+    )
 }

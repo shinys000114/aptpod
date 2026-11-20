@@ -216,7 +216,8 @@ impl Repo {
         };
         for alias in &touched {
             let p = db::publish(&self.conn, alias).map_err(unsynced)?;
-            let (dists, removed) = self.sync_tree(&p).map_err(unsynced)?;
+            let (dists, removed, copied) = self.sync_tree(&p).map_err(unsynced)?;
+            applied.pool_copied += copied;
             applied
                 .published
                 .extend(dists.into_iter().map(|d| (alias.clone(), d)));
@@ -243,7 +244,8 @@ impl Repo {
                 !p.layout.components_of(d).is_empty() && published.get(d) != Some(&p.head)
             }) || published.keys().any(|d| !p.layout.dists.contains(d));
             if behind {
-                let (dists, removed) = self.sync_tree(&p)?;
+                let (dists, removed, copied) = self.sync_tree(&p)?;
+                applied.pool_copied += copied;
                 applied
                     .published
                     .extend(dists.into_iter().map(|d| (p.alias.clone(), d)));
@@ -255,7 +257,9 @@ impl Repo {
 
     /// Writes the dists of `p` that differ from what the tree shows, removes
     /// dists the layout no longer has, then cleans the pool.
-    fn sync_tree(&self, p: &db::Publish) -> Result<(Vec<String>, usize), Error> {
+    /// Brings the tree of `p` to its head: (dists written, pool files
+    /// removed, pool files copied instead of linked).
+    fn sync_tree(&self, p: &db::Publish) -> Result<(Vec<String>, usize, usize), Error> {
         let layout = &p.layout;
         if layout.sign && self.signer.is_none() {
             return Err(Error::Invalid(format!(
@@ -307,6 +311,7 @@ impl Repo {
         };
 
         let mut written = Vec::new();
+        let mut copied = 0;
         for dist in &layout.dists {
             let comps = layout.components_of(dist);
             if comps.is_empty() {
@@ -361,7 +366,7 @@ impl Repo {
             } else {
                 None
             };
-            publish_dist(root, &spec, signer)?;
+            copied += publish_dist(root, &spec, signer)?.pool_copied;
             db::set_published(&self.conn, p.id, dist, Some(p.head))?;
             written.push(dist.clone());
         }
@@ -378,7 +383,7 @@ impl Repo {
             }
         }
         let removed = cleanup_pool(root, &keep)?.len();
-        Ok((written, removed))
+        Ok((written, removed, copied))
     }
 
     /// Packages of the given cells of a publish, filtered; sorted by dist
