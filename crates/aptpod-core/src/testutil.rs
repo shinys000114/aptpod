@@ -61,3 +61,92 @@ pub fn build_deb(
     );
     out
 }
+
+/// A throwaway gpg key (ed25519, with a passphrase) in a short-lived home.
+pub struct TestKey {
+    pub home: tempfile::TempDir,
+    pub fpr: String,
+    pub passphrase_file: PathBuf,
+    /// Binary public key, as apt's `signed-by` wants it.
+    pub public: Vec<u8>,
+}
+
+impl TestKey {
+    pub fn new() -> Option<Self> {
+        if !have("gpg") {
+            return None;
+        }
+        // short path: gpg-agent socket names are length limited
+        let home = tempfile::Builder::new()
+            .prefix("apk")
+            .tempdir_in("/tmp")
+            .unwrap();
+        std::fs::set_permissions(
+            home.path(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
+        let passphrase_file = home.path().join("pass");
+        std::fs::write(&passphrase_file, "s3cret-test\n").unwrap();
+        let gpg = |args: &[&str]| {
+            let out = Command::new("gpg")
+                .arg("--homedir")
+                .arg(home.path())
+                .arg("--batch")
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "gpg {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            out.stdout
+        };
+        let pass = passphrase_file.to_str().unwrap();
+        gpg(&[
+            "--pinentry-mode",
+            "loopback",
+            "--passphrase-file",
+            pass,
+            "--quick-gen-key",
+            "aptpod test <test@example.invalid>",
+            "ed25519",
+            "sign",
+            "never",
+        ]);
+        let list = String::from_utf8(gpg(&["--with-colons", "--list-secret-keys"])).unwrap();
+        let fpr = list
+            .lines()
+            .find(|l| l.starts_with("fpr:"))
+            .unwrap()
+            .split(':')
+            .nth(9)
+            .unwrap()
+            .to_string();
+        let public = gpg(&["--export", &fpr]);
+        Some(Self {
+            home,
+            fpr,
+            passphrase_file,
+            public,
+        })
+    }
+
+    pub fn signer(&self) -> crate::sign::GpgSigner {
+        let mut s = crate::sign::GpgSigner::new(self.fpr.clone());
+        s.homedir = Some(self.home.path().to_path_buf());
+        s.passphrase_file = Some(self.passphrase_file.clone());
+        s
+    }
+}
+
+impl Drop for TestKey {
+    fn drop(&mut self) {
+        let _ = Command::new("gpgconf")
+            .arg("--homedir")
+            .arg(self.home.path())
+            .args(["--kill", "all"])
+            .status();
+    }
+}

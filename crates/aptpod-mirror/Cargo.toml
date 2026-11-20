@@ -10,3 +10,16 @@ publish = false
 
 [dependencies]
 aptpod-core.workspace = true
+reqwest.workspace = true
+thiserror.workspace = true
+flate2.workspace = true
+liblzma.workspace = true
+glob.workspace = true
+sha2.workspace = true
+serde.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
+
+[dev-dependencies]
+aptpod-core = { workspace = true, features = ["testutil"] }
+tempfile.workspace = true
+time.workspace = true

@@ -18,8 +18,11 @@ pub mod term;
 pub mod verify;
 pub mod version;
 
-#[cfg(test)]
-pub(crate) mod testutil;
+/// Helpers for tests of aptpod crates (dpkg-deb fixtures, gpg keys); not
+/// part of the API.
+#[cfg(any(test, feature = "testutil"))]
+#[doc(hidden)]
+pub mod testutil;
 
 /// Errors from aptpod-core.
 #[derive(Debug, thiserror::Error)]

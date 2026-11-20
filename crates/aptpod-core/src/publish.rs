@@ -143,7 +143,7 @@ pub fn publish_dist(
     }
 
     // 3. Swap it in.
-    report.atomic_swap = swap_in(&tmp, &dists.join(&spec.name))?;
+    report.atomic_swap = swap_dir(&tmp, &dists.join(&spec.name))?;
     Ok(report)
 }
 
@@ -197,9 +197,11 @@ fn write_indices(
     Ok(())
 }
 
-/// Replaces `target` by `new`. Uses `RENAME_EXCHANGE` (one atomic step);
-/// filesystems without it (e.g. some FUSE ones) fall back to two renames.
-fn swap_in(new: &Path, target: &Path) -> Result<bool, Error> {
+/// Replaces the directory `target` by `new` (which is consumed). Uses
+/// `RENAME_EXCHANGE` (one atomic step); filesystems without it (e.g. some
+/// FUSE ones) fall back to two renames. Returns whether it was atomic.
+/// Temporary names start with `.aptpod-old-` (see [`clean_leftovers`]).
+pub fn swap_dir(new: &Path, target: &Path) -> Result<bool, Error> {
     if !target.exists() {
         fs::rename(new, target).map_err(|e| Error::io(target, e))?;
         return Ok(true);

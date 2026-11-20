@@ -22,5 +22,11 @@ thiserror.workspace = true
 rustix.workspace = true
 pgp.workspace = true
 
+tempfile = { workspace = true, optional = true }
+
+[features]
+# Test helpers for other aptpod crates.
+testutil = ["dep:tempfile"]
+
 [dev-dependencies]
 tempfile.workspace = true

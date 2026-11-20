@@ -65,6 +65,20 @@ pub fn verify_inrelease(keyring: &Keyring, data: &[u8]) -> Result<String, Error>
     Ok(signed)
 }
 
+/// The signed text of a clearsigned `InRelease` without checking the
+/// signature, for sources explicitly configured as insecure.
+pub fn inrelease_text_unverified(data: &[u8]) -> Result<String, Error> {
+    let text =
+        std::str::from_utf8(data).map_err(|_| Error::Verify("InRelease is not UTF-8".into()))?;
+    let (msg, _) = CleartextSignedMessage::from_string(text)
+        .map_err(|e| Error::Verify(format!("not a clearsigned message: {e}")))?;
+    let mut signed = msg.signed_text().replace("\r\n", "\n");
+    if !signed.ends_with('\n') {
+        signed.push('\n');
+    }
+    Ok(signed)
+}
+
 /// Verifies a detached `Release.gpg` over `data`.
 pub fn verify_detached(keyring: &Keyring, data: &[u8], signature: &[u8]) -> Result<(), Error> {
     let (iter, _) = DetachedSignature::from_reader_many(signature)
