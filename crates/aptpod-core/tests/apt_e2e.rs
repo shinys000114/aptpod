@@ -87,6 +87,7 @@ fn apt_installs_from_generated_repo() {
         .map(|f| PublishPackage {
             info: read_deb(f).unwrap(),
             file: f.clone(),
+            mode: Default::default(),
         })
         .collect();
     let root = d.join("repo");

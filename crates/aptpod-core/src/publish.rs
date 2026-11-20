@@ -21,14 +21,17 @@ use crate::hash::hash_bytes;
 use crate::index::{
     IndexFile, IndexPackage, ReleaseMeta, component_release, gzip, packages_text, release_text, xz,
 };
-use crate::pool::{Placed, place, pool_path};
+use crate::pool::{PlaceMode, Placed, place, pool_path};
 use crate::sign::Signer;
 
 /// A package to publish and where its bytes are.
 #[derive(Debug, Clone)]
 pub struct PublishPackage {
     pub info: DebInfo,
+    /// Where the bytes are (e.g. the content store).
     pub file: PathBuf,
+    /// How to treat an existing pool file of the same name.
+    pub mode: PlaceMode,
 }
 
 #[derive(Debug, Clone)]
@@ -52,6 +55,9 @@ pub struct PublishReport {
     pub pool_linked: usize,
     pub pool_copied: usize,
     pub pool_present: usize,
+    pub pool_replaced: usize,
+    /// Pool files used by this dist, relative to the root.
+    pub pool_files: Vec<String>,
     /// Index files written, relative to `dists/<dist>/`.
     pub files: Vec<String>,
     /// Whether the dist directory was swapped atomically.
@@ -107,11 +113,13 @@ pub fn publish_dist(
                 )));
             }
             let rel = pool_path(&comp.name, &p.info)?;
-            match place(&p.file, root, &rel, &p.info.hashes)? {
+            match place(&p.file, root, &rel, &p.info.hashes, p.mode)? {
                 Placed::Linked => report.pool_linked += 1,
                 Placed::Copied => report.pool_copied += 1,
                 Placed::Present => report.pool_present += 1,
+                Placed::Replaced => report.pool_replaced += 1,
             }
+            report.pool_files.push(rel.clone());
             pkgs.push(IndexPackage {
                 control: p.info.control.clone(),
                 filename: rel,
@@ -221,4 +229,50 @@ fn swap_in(new: &Path, target: &Path) -> Result<bool, Error> {
     }
     fs::remove_dir_all(&old).map_err(|e| Error::io(&old, e))?;
     Ok(false)
+}
+
+/// Removes `dists/<dist>` (a dist this tree no longer publishes).
+pub fn remove_dist(root: &Path, dist: &str) -> Result<bool, Error> {
+    check_name("dist", dist)?;
+    let dir = root.join("dists").join(dist);
+    if !dir.exists() {
+        return Ok(false);
+    }
+    fs::remove_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
+    Ok(true)
+}
+
+/// Removes what an interrupted publish can leave behind: temporary and
+/// old dist directories in `dists/` and temporary pool files.
+pub fn clean_leftovers(root: &Path) -> Result<Vec<PathBuf>, Error> {
+    let mut removed = Vec::new();
+    let dists = root.join("dists");
+    if let Ok(rd) = fs::read_dir(&dists) {
+        for e in rd {
+            let e = e?;
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with(".aptpod-tmp-") || name.starts_with(".aptpod-old-") {
+                fs::remove_dir_all(e.path()).map_err(|err| Error::io(&e.path(), err))?;
+                removed.push(e.path());
+            }
+        }
+    }
+    fn walk(dir: &Path, removed: &mut Vec<PathBuf>) -> Result<(), Error> {
+        let Ok(rd) = fs::read_dir(dir) else {
+            return Ok(());
+        };
+        for e in rd {
+            let e = e?;
+            let p = e.path();
+            if e.file_type()?.is_dir() {
+                walk(&p, removed)?;
+            } else if e.file_name().to_string_lossy().ends_with(".aptpod-tmp") {
+                fs::remove_file(&p).map_err(|err| Error::io(&p, err))?;
+                removed.push(p);
+            }
+        }
+        Ok(())
+    }
+    walk(&root.join("pool"), &mut removed)?;
+    Ok(removed)
 }

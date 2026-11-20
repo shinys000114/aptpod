@@ -207,13 +207,57 @@ Admin: publishes, mirrors, users, tokens, layout revisions.
 |---|---|---|
 | P0 ✅ | Repo, workspace, CI (fmt, clippy, test), release pipeline (musl x86_64/aarch64, two .deb), license/NOTICE | a tag produces both .deb packages |
 | P1 ✅ | aptpod-core: version compare (cross-checked with dpkg), .deb parsing (gz/xz/zst), index writer, by-hash, gpg sign, rpgp verify, pool, atomic swap | containers `apt-get update && install` from a generated tree; indices match apt-ftparchive |
-| P2 | aptpod-repo: layout edits with dry-run, publish create/delete, add incl. URL + checksums, rm with globs and version conditions, promote, keep, prune-versions, revisions + snapshot labels, diff, rollback, history retention, refcounted pool cleanup | the aptrix integration scenarios (minus the dropped aptly-only parts) ported and passing |
-| P3 | aptpod-server + aptpod CLI: API, users/tokens/roles, jobs + SSE + per-prefix locks, audit, layout revisions, TOML import/export, systemd unit | CI uploads and every CLI command go through the server |
+| P2 ✅ | aptpod-repo: layout edits with dry-run, publish create/delete, add (local files, optional expected sha256), rm with globs and version conditions, promote, keep, prune-versions, revisions + snapshot labels, diff, rollback, history retention, refcounted pool cleanup, repair | the aptrix integration scenarios (minus the dropped aptly-only parts) ported and passing |
+| P3 | aptpod-server + aptpod CLI: API, users/tokens/roles, jobs + SSE + per-prefix locks, audit, layout revisions, TOML import/export, add from URLs + `--checksums` (downloads are server jobs; moved from P2), systemd unit | CI uploads and every CLI command go through the server |
 | P4 | aptpod-mirror verbatim (HTTP, then rsync), scheduler | the reference PPA and Debian/Ubuntu mirrors run from aptpod with identical output |
 | P5 | Web UI: matrix, packages, upload/promote with preview, snapshots/diff/rollback, layout editor + history, mirrors, jobs, users/tokens | day-to-day work possible from a browser |
 | P6 | Re-signed mirrors | auto-replicated layout, filters, snapshot per sync |
 | P6.5 | Native Debian packaging: `debian/` (control, rules with vendored crates, changelog, copyright, systemd unit via debhelper), source package builds with `debuild`; CI builds it too | `debuild -us -uc` produces `aptpod` and `aptpod-server` .debs equivalent to the cargo-deb ones |
 | P7 | Migration of the reference host: import aptly's published trees (`dists` + `pool`, no aptly API needed), publish side by side, compare, switch the web server's symlinks, switch CI, move mirror jobs one by one, remove aptly and the old scripts | same paths and key, no client-visible change |
+
+## P2 notes
+
+Consistency rules the engine enforces:
+
+- The database is the truth. Each dist records the revision it was last
+  written from; `apply` commits first, then syncs the tree, and `repair`
+  (or the next apply) finishes a publish that failed half way.
+- Every change is a plan bound to the head revisions it was computed from;
+  `apply` refuses a stale plan.
+- A pool path is shared by every dist of a component: conflicts are checked
+  across the component, and `--replace` swaps the content in every cell that
+  lists it.
+- aptpod only deletes under `pool/` and `dists/<dist>` of its own trees;
+  publish paths may not be equal or nested.
+- Ingest writes the file before its row; gc deletes rows before files.
+- Revisions share unchanged cells (content-addressed cell sets); unchanged
+  dists are not rewritten.
+- A signed publish without a signer is an error, never an unsigned publish.
+- A dist left without components (via `only`) is not published.
+- Pool placement is decided per pool path from what the published
+  revisions put there: same content -> trusted without re-hashing, other
+  content -> replaced (rollback over `--replace`, interrupted replace),
+  unknown -> verified. Two different files with the same pool path in one
+  `add` are refused.
+- A publish path that already holds `pool/` or one of its `dists/<dist>` is
+  refused unless `adopt` (which rewrites those dists and deletes unlisted
+  pool files). A path move removes only the dists aptpod recorded.
+- After the commit, tree failures are `Unsynced` (repair, do not re-plan).
+- `gc` keeps unreferenced packages ingested in the last hour (a pending
+  plan may use them). The store copies files (mode 0644), never links the
+  caller's file.
+
+aptrix scenarios: ported - matrix lifecycle (detect/all/list dists, cell and
+arch errors, conflict and replace, newest-first listing, rm keep and
+name=version, add/remove component with force, drop dist), signed publish,
+glob rm + rollback + undo, keep per name, snapshot create/drop, keep on add,
+find (globs, newest, version conditions), promote (copy, no-op, to-dist,
+move, same-cell refusal), prune-versions, diff, history expiry + gc keeping
+labelled content, cross-publish promote (arch refusal, shared dists only),
+publish delete. New - stale plan refusal, replace across dists, repair after
+a signing failure half way, path overlap. Dropped - `sync` confirmation and
+staged sources, `--prune`/`retire`, `--no-snapshot`/`pre-*` labels, aptly
+`gc`, URL add (P3).
 
 ## Testing
 

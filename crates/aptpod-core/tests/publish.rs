@@ -58,6 +58,7 @@ fn spec(debs: &[PathBuf]) -> DistSpec {
         .map(|f| PublishPackage {
             info: read_deb(f).unwrap(),
             file: f.clone(),
+            mode: Default::default(),
         })
         .collect();
     let mut meta = ReleaseMeta::new(DIST, "aptpod-test", "aptpod test");

@@ -23,6 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(PublishPackage {
                 info: read_deb(f.as_ref())?,
                 file: PathBuf::from(f),
+                mode: Default::default(),
             })
         })
         .collect::<Result<Vec<_>, aptpod_core::Error>>()?;
