@@ -135,6 +135,23 @@ md-5, pgp (rpgp), argon2, askama, cron, tracing.
   in per dist; pool files are in place before the new indices appear.
 - Optional (later): `Contents-<arch>`, `Sources`, udebs.
 
+Findings from P1 (verified, not assumed):
+
+- `Packages` stanzas, their order (name, newest version first, arch) and the
+  trailing blank line match aptly byte for byte: regenerating a published
+  aptly dist from its own pool gives identical `Packages`, identical
+  per-component `Release` and identical pool paths, so the checksums in the
+  dist `Release` are the same.
+- Release header: Origin, Label, Suite, Codename are reproduced exactly
+  (apt warns when those change); `Description` is per-publish metadata.
+- apt 2.6 (bookworm) fails with "Internal parsing error" when a binary's
+  `Source: x (ver)` is newer than the binary version. apt-ftparchive emits
+  the same stanza, so this is an input problem; `add` should warn about it.
+- by-hash is off by default and per publish; when enabled, a dist swap must
+  carry the previous generation's `by-hash` files forward.
+- On filesystems without hard links or `RENAME_EXCHANGE` (e.g. mergerfs)
+  pool files are copied and the dist swap falls back to two renames.
+
 Compatibility is proven by tests, not by inspection: CI runs `apt-get update`
 and `apt-get install` against generated trees in Debian (bookworm, trixie)
 and Ubuntu (jammy, noble, resolute) containers, and compares indices with
@@ -188,8 +205,8 @@ Admin: publishes, mirrors, users, tokens, layout revisions.
 
 | Phase | Scope | Done when |
 |---|---|---|
-| P0 | Repo, workspace, CI (fmt, clippy, test), release pipeline (musl x86_64/aarch64, two .deb), license/NOTICE | a tag produces both .deb packages |
-| P1 | aptpod-core: version compare (cross-checked with dpkg), .deb parsing (gz/xz/zst), index writer, by-hash, gpg sign, rpgp verify, pool, atomic swap | containers `apt-get update && install` from a generated tree; indices match apt-ftparchive |
+| P0 ✅ | Repo, workspace, CI (fmt, clippy, test), release pipeline (musl x86_64/aarch64, two .deb), license/NOTICE | a tag produces both .deb packages |
+| P1 ✅ | aptpod-core: version compare (cross-checked with dpkg), .deb parsing (gz/xz/zst), index writer, by-hash, gpg sign, rpgp verify, pool, atomic swap | containers `apt-get update && install` from a generated tree; indices match apt-ftparchive |
 | P2 | aptpod-repo: layout edits with dry-run, publish create/delete, add incl. URL + checksums, rm with globs and version conditions, promote, keep, prune-versions, revisions + snapshot labels, diff, rollback, history retention, refcounted pool cleanup | the aptrix integration scenarios (minus the dropped aptly-only parts) ported and passing |
 | P3 | aptpod-server + aptpod CLI: API, users/tokens/roles, jobs + SSE + per-prefix locks, audit, layout revisions, TOML import/export, systemd unit | CI uploads and every CLI command go through the server |
 | P4 | aptpod-mirror verbatim (HTTP, then rsync), scheduler | the reference PPA and Debian/Ubuntu mirrors run from aptpod with identical output |

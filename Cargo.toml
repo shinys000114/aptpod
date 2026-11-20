@@ -16,6 +16,19 @@ aptpod-core = { path = "crates/aptpod-core" }
 aptpod-repo = { path = "crates/aptpod-repo" }
 aptpod-mirror = { path = "crates/aptpod-mirror" }
 clap = { version = "4.6", features = ["derive"] }
+ar = "0.9"
+tar = { version = "0.4", default-features = false }
+flate2 = "1.1"
+liblzma = { version = "0.4", features = ["static"] }
+zstd = "0.14"
+sha2 = "0.11"
+sha1 = "0.11"
+md-5 = "0.11"
+time = { version = "0.3", features = ["formatting", "macros"] }
+thiserror = "2"
+rustix = { version = "1", features = ["fs"] }
+pgp = "0.21"
+tempfile = "3"
 
 [profile.release]
 lto = "thin"
