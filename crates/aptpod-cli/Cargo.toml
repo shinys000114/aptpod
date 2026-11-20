@@ -1,0 +1,33 @@
+[package]
+name = "aptpod-cli"
+description = "Command line client for aptpod-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "aptpod"
+path = "src/main.rs"
+
+[dependencies]
+aptpod-core.workspace = true
+clap.workspace = true
+
+[package.metadata.deb]
+name = "aptpod"
+maintainer = "shinys000114 <shinys000114@users.noreply.github.com>"
+copyright = "aptpod contributors"
+license-file = ["../../LICENSE", "0"]
+extended-description = """\
+Command line client for aptpod-server: manage apt repositories \
+(dist x component layouts, packages, snapshots) and mirrors."""
+section = "admin"
+priority = "optional"
+assets = [
+    ["target/release/aptpod", "usr/bin/", "755"],
+    ["../../README.md", "usr/share/doc/aptpod/README.md", "644"],
+    ["../../NOTICE", "usr/share/doc/aptpod/NOTICE", "644"],
+]

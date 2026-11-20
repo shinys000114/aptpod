@@ -1,0 +1,47 @@
+[package]
+name = "aptpod-server"
+description = "apt repository and mirror server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "aptpod-server"
+path = "src/main.rs"
+
+[dependencies]
+aptpod-core.workspace = true
+aptpod-repo.workspace = true
+aptpod-mirror.workspace = true
+clap.workspace = true
+
+[package.metadata.deb]
+name = "aptpod-server"
+maintainer = "shinys000114 <shinys000114@users.noreply.github.com>"
+copyright = "aptpod contributors"
+license-file = ["../../LICENSE", "0"]
+extended-description = """\
+aptpod-server manages apt repositories (dist x component layouts, \
+packages, snapshots, retention) and mirrors of remote repositories, with a \
+REST API, a web UI and scheduled jobs."""
+section = "admin"
+priority = "optional"
+depends = "$auto, adduser, gpg"
+recommends = "rsync"
+maintainer-scripts = "../../packaging/server/"
+conf-files = ["/etc/aptpod/server.toml"]
+assets = [
+    ["target/release/aptpod-server", "usr/bin/", "755"],
+    ["../../packaging/server/server.toml", "etc/aptpod/server.toml", "640"],
+    ["../../README.md", "usr/share/doc/aptpod-server/README.md", "644"],
+    ["../../NOTICE", "usr/share/doc/aptpod-server/NOTICE", "644"],
+]
+
+[package.metadata.deb.systemd-units]
+unit-name = "aptpod-server"
+unit-scripts = "../../packaging/server/"
+enable = false
+start = false

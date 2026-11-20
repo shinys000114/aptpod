@@ -1,0 +1,9 @@
+# aptpod-server bootstrap settings. Repository layouts, mirrors, users and
+# schedules live in the server database; manage them with the `aptpod` CLI,
+# the web UI, or `aptpod config import <file.toml>`.
+
+# Address of the REST API and web UI. Put a TLS reverse proxy in front.
+listen = "127.0.0.1:8090"
+
+# Database, package pool and job logs.
+data_dir = "/var/lib/aptpod"

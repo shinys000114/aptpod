@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Builds static musl binaries for x86_64 and aarch64 and the two .deb
+# packages into dist/.
+name: build
+description: build aptpod release artifacts
+inputs:
+  version:
+    description: version or tag (a leading "v" is stripped); must be semver
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: x86_64-unknown-linux-musl, aarch64-unknown-linux-musl
+    - uses: Swatinem/rust-cache@v2
+    - uses: mlugg/setup-zig@v2
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-zigbuild,cargo-deb
+    - name: Set version
+      shell: bash
+      run: |
+        set -euo pipefail
+        v="${{ inputs.version }}"; v="${v#v}"
+        echo "APTPOD_VERSION=$v" >> "$GITHUB_ENV"
+        sed -i "0,/^version = .*/s//version = \"$v\"/" Cargo.toml
+        cargo update --workspace --offline || cargo update --workspace
+        grep -m1 '^version' Cargo.toml
+    - name: Build and package
+      shell: bash
+      run: |
+        set -euo pipefail
+        export APTPOD_COMMIT="${GITHUB_SHA::7}"
+        mkdir -p dist
+        for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+          cargo zigbuild --release --locked --target "$target" -p aptpod-cli -p aptpod-server
+          arch="${target%%-*}"
+          for bin in aptpod aptpod-server; do
+            cp "target/$target/release/$bin" "dist/${bin}_${APTPOD_VERSION}_linux_${arch}"
+          done
+          for pkg in aptpod-cli aptpod-server; do
+            cargo deb --no-build --no-strip -p "$pkg" --target "$target" --output dist/
+          done
+        done
+        cd dist && sha256sum * > checksums.txt && cat checksums.txt

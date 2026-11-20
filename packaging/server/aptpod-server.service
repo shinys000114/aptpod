@@ -1,0 +1,22 @@
+[Unit]
+Description=aptpod apt repository and mirror server
+Documentation=https://github.com/shinys000114/aptpod
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=aptpod
+Group=aptpod
+ExecStart=/usr/bin/aptpod-server --config /etc/aptpod/server.toml
+Restart=on-failure
+RestartSec=10s
+StateDirectory=aptpod
+StateDirectoryMode=0750
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+# Repository output trees outside /var/lib/aptpod need ReadWritePaths= in a
+# drop-in (systemctl edit aptpod-server).
+
+[Install]
+WantedBy=multi-user.target

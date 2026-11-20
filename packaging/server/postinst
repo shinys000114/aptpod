@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "configure" ]; then
+    if ! getent passwd aptpod >/dev/null; then
+        adduser --system --group --home /var/lib/aptpod --no-create-home \
+            --gecos "aptpod server" aptpod
+    fi
+    chgrp aptpod /etc/aptpod/server.toml 2>/dev/null || true
+fi
+
+#DEBHELPER#
