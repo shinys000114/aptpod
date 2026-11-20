@@ -163,6 +163,10 @@ pub fn sync(m: &RsyncMirror, ctx: &Ctx) -> Result<RsyncReport, Error> {
         let pass = run_pass(m, ctx, stage, &extra, delete)?;
         let code = pass.exit_code;
         report.passes.push(pass);
+        // Pool files on disk before the indices that name them arrive.
+        if matches!(code, 0 | 24) && stage == "payloads" {
+            crate::http::sync_fs(ctx.dest)?;
+        }
         match code {
             0 => {}
             24 => report.warnings.push(format!(

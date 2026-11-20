@@ -27,4 +27,5 @@ tempfile.workspace = true
 # examples/bench.rs: a fast local static server
 axum.workspace = true
 tower-http = { workspace = true, features = ["fs"] }
-tokio = { workspace = true, features = ["rt-multi-thread", "net"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "time", "fs", "io-util"] }
+futures-util.workspace = true

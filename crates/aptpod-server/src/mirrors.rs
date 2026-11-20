@@ -40,8 +40,8 @@ fn yes() -> bool {
 fn is_false(b: &bool) -> bool {
     !b
 }
-fn four() -> usize {
-    4
+fn eight() -> usize {
+    8
 }
 fn three() -> u32 {
     3
@@ -84,7 +84,7 @@ pub struct MirrorDef {
     /// Pool paths upstream lists but does not serve (404/410), accepted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ignore_missing: Vec<String>,
-    #[serde(default = "four")]
+    #[serde(default = "eight")]
     pub parallel: usize,
     #[serde(default = "three")]
     pub retries: u32,
@@ -382,7 +382,7 @@ mod tests {
         let d: MirrorDef = toml::from_str(toml_def).unwrap();
         assert_eq!(
             (d.kind, d.parallel, d.prune, d.enabled),
-            (Kind::Http, 4, true, true)
+            (Kind::Http, 8, true, true)
         );
         let Engine::Http(m) = d.engine().unwrap() else {
             panic!("http")

@@ -1541,7 +1541,7 @@ fn mirrors() {
         exported.contains("[mirrors.up]") && exported.contains("BEGIN PGP PUBLIC KEY BLOCK"),
         "{exported}"
     );
-    let changed = exported.replacen("parallel = 4", "parallel = 2", 1);
+    let changed = exported.replacen("parallel = 8", "parallel = 2", 1);
     let out = admin.run(&["config", "import", "-", "-y"], &changed);
     assert!(out.status.success(), "{}", text(&out));
     assert!(

@@ -655,7 +655,15 @@ async fn add(
         .iter()
         .map(|id| upload_path(&st, id))
         .collect::<Result<Vec<_>, _>>()?;
-    let files: Vec<aptpod_repo::ops::AddFile> = paths.iter().cloned().map(Into::into).collect();
+    // Uploads belong to the server: the store may link them, not copy.
+    let files: Vec<aptpod_repo::ops::AddFile> = paths
+        .iter()
+        .map(|p| aptpod_repo::ops::AddFile {
+            path: p.clone(),
+            sha256: None,
+            owned: true,
+        })
+        .collect();
     let resource = format!("publish:{alias}");
     let component = req.component;
     let replace = req.replace;

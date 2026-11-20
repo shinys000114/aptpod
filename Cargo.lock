@@ -152,6 +152,7 @@ dependencies = [
  "aptpod-core",
  "axum",
  "flate2",
+ "futures-util",
  "glob",
  "liblzma",
  "reqwest",

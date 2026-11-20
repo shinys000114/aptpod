@@ -23,10 +23,17 @@ impl Store {
         self.root.join(&sha256[..2]).join(format!("{sha256}.deb"))
     }
 
-    /// Reads `file` and copies it into the store (if not there yet). The file
-    /// is written before the caller records it in the database, so a crash
+    /// Reads `file` and copies it into the store (if not there yet); an
+    /// `owned` file (one nobody else will change, such as a server upload)
+    /// is hard-linked when it is on the same filesystem. The file is
+    /// written before the caller records it in the database, so a crash
     /// leaves at most an orphan file.
-    pub fn ingest(&self, file: &Path, expected_sha256: Option<&str>) -> Result<DebInfo, Error> {
+    pub fn ingest(
+        &self,
+        file: &Path,
+        expected_sha256: Option<&str>,
+        owned: bool,
+    ) -> Result<DebInfo, Error> {
         let info = read_deb(file)?;
         if let Some(want) = expected_sha256
             && !want.eq_ignore_ascii_case(&info.hashes.sha256)
@@ -43,14 +50,18 @@ impl Store {
         }
         let dir = dst.parent().expect("has parent");
         fs::create_dir_all(dir)?;
-        // Copy (never link): the store must own its files, and the pool links
-        // made from them must be world-readable for the web server.
+        // A caller's file is copied: the store must own its files. The pool
+        // links made from them must be world-readable for the web server.
         let tmp = dir.join(format!(
-            ".{}.tmp-{}",
+            ".{}.tmp-{}-{:?}",
             info.hashes.sha256,
-            std::process::id()
+            std::process::id(),
+            std::thread::current().id()
         ));
-        fs::copy(file, &tmp)?;
+        let _ = fs::remove_file(&tmp);
+        if !(owned && fs::hard_link(file, &tmp).is_ok()) {
+            fs::copy(file, &tmp)?;
+        }
         fs::set_permissions(&tmp, std::os::unix::fs::PermissionsExt::from_mode(0o644))?;
         fs::rename(&tmp, &dst)?;
         Ok(info)
@@ -62,5 +73,29 @@ impl Store {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
             _ => Ok(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn owned_files_are_linked_others_copied() {
+        if !aptpod_core::testutil::have("dpkg-deb") {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let a = aptpod_core::testutil::build_deb(d.path(), "aa", "1.0", "all", "xz", "");
+        let b = aptpod_core::testutil::build_deb(d.path(), "bb", "1.0", "all", "xz", "");
+        let store = Store::new(d.path().join("store"));
+        let ia = store.ingest(&a, None, true).unwrap();
+        let ib = store.ingest(&b, None, false).unwrap();
+        let ino = |p: &Path| fs::metadata(p).unwrap().ino();
+        assert_eq!(ino(&a), ino(&store.path(&ia.hashes.sha256)), "linked");
+        assert_ne!(ino(&b), ino(&store.path(&ib.hashes.sha256)), "copied");
+        let mode = fs::metadata(store.path(&ia.hashes.sha256)).unwrap().mode() & 0o777;
+        assert_eq!(mode, 0o644);
     }
 }

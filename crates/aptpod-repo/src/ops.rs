@@ -29,11 +29,18 @@ pub enum Dists {
 pub struct AddFile {
     pub path: PathBuf,
     pub sha256: Option<String>,
+    /// The caller owns the file and will not change it (e.g. a server
+    /// upload): the store may hard-link it instead of copying.
+    pub owned: bool,
 }
 
 impl From<PathBuf> for AddFile {
     fn from(path: PathBuf) -> Self {
-        Self { path, sha256: None }
+        Self {
+            path,
+            sha256: None,
+            owned: false,
+        }
     }
 }
 
@@ -235,8 +242,32 @@ impl Repo {
         let mut warnings = Vec::new();
         let mut incoming: Vec<(i64, Vec<String>)> = Vec::new();
         let now = self.now();
-        for f in files {
-            let info = self.store.ingest(&f.path, f.sha256.as_deref())?;
+        // Reading and hashing the files is the expensive part: in parallel.
+        let infos = {
+            let n = std::thread::available_parallelism()
+                .map_or(4, |n| n.get())
+                .min(8);
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            let store = &self.store;
+            let out: Vec<std::sync::Mutex<Option<Result<aptpod_core::deb::DebInfo, Error>>>> =
+                files.iter().map(|_| std::sync::Mutex::new(None)).collect();
+            std::thread::scope(|s| {
+                for _ in 0..n.min(files.len()).max(1) {
+                    s.spawn(|| {
+                        loop {
+                            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some(f) = files.get(i) else { return };
+                            *out[i].lock().unwrap() =
+                                Some(store.ingest(&f.path, f.sha256.as_deref(), f.owned));
+                        }
+                    });
+                }
+            });
+            out.into_iter()
+                .map(|m| m.into_inner().unwrap().expect("every file ran"))
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        for (f, info) in files.iter().zip(infos) {
             let shown = f.path.display();
             if !layout.publishes_arch(info.architecture()) {
                 return Err(Error::Invalid(format!(

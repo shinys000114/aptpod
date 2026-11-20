@@ -145,12 +145,55 @@ fn verbatim_subset_then_nothing_to_do() {
     aptpod_core::verify::verify_inrelease(&ring, &read(&e.dest().join("dists/noble/InRelease")))
         .unwrap();
 
-    // Second run: everything known, no pool request at all.
+    // Second run: everything known, no pool request at all, and of the
+    // indices only the three Release files per dist are fetched again.
     let before = e.srv.requests_for("pool/").len();
+    let dists_before = e.srv.requests_for("dists/").len();
     let r = e.run(&m);
     ok(&r);
     assert_eq!((r.downloaded, r.deleted, r.would_delete), (0, 0, 0));
     assert_eq!(e.srv.requests_for("pool/").len(), before);
+    assert_eq!(e.srv.requests_for("dists/").len() - dists_before, 2 * 3);
+    assert!(
+        r.dists.iter().all(|d| d.indices_reused == d.indices),
+        "{r:#?}"
+    );
+    for dist in ["noble", "jammy"] {
+        for f in tree(&e.dest().join(format!("dists/{dist}"))) {
+            assert!(e.same(&format!("dists/{dist}/{f}")), "{dist}/{f}");
+        }
+    }
+    // A changed index upstream is fetched; the unchanged ones are not.
+    let extra = e.up.deb("late", "1.0", "amd64", "z");
+    e.up.publish(
+        "noble",
+        &["amd64", "arm64"],
+        &[
+            (
+                "main",
+                vec![
+                    hello64.clone(),
+                    hello_arm.clone(),
+                    tool.clone(),
+                    extra.clone(),
+                ],
+            ),
+            ("extra", vec![xtra.clone()]),
+        ],
+    );
+    let r = e.run(&m);
+    ok(&r);
+    // Packages, .gz, .xz changed; the per-component Release did not.
+    assert_eq!(
+        (r.dists[0].indices, r.dists[0].indices_reused),
+        (4, 1),
+        "{r:#?}"
+    );
+    assert_eq!(
+        r.dists[1].indices_reused, r.dists[1].indices,
+        "jammy unchanged"
+    );
+    assert!(e.same(&e.up.pool_of("main", &extra)));
 }
 
 #[test]

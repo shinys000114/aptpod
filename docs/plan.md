@@ -515,6 +515,35 @@ P4e (side-by-side on the reference host) is left for when the server is
 installed there. Next: P4c rsync kinds, P4d scheduler and
 public status.
 
+## Performance notes
+
+Measured, not guessed (`examples/bench` in aptpod-mirror models a link
+with per-request latency and a shared rate cap, server in its own
+process; `examples/bench_add` in aptpod-repo).
+
+- The reference upstream link (from the reference host, read-only
+  requests): 20-45 ms to first byte; one stream 53 MB/s, four ranged
+  streams 58 MB/s together. The link is the limit, not the connection, so
+  segmented downloads or several upstream sources would not help there;
+  they are not built. Latency per request is what costs.
+- Unchanged indices are taken over from the current tree (re-hashed
+  against the verified Release, hard-linked into staging) and the rest
+  are fetched concurrently: a rerun of 7 dists x 21 components went from
+  33 s to 0.8 s at 30 ms latency (3 Release requests per dist remain).
+- Small pool files are latency-bound and scale with parallel downloads
+  (5000 x 32 KiB at 30 ms: 44 s with 4, 22 s with 8, 12 s with 16); the
+  default is now 8, as the reference host's current tool uses.
+- Storage: one `syncfs` after the pool phase, before any dist switches
+  (rsync: between the two passes), so a power loss cannot leave indices
+  or the hash cache vouching for data that never reached the disk;
+  large downloads are preallocated (`fallocate` KEEP_SIZE, resume keeps
+  working).
+- Repository adds: files are read and hashed in parallel (300 x 1 MiB:
+  1.27 s to 0.32 s); server uploads are hard-linked into the store instead
+  of copied. Publishing hard-links store files into the tree, which
+  needs the data dir and the publish roots on one filesystem; otherwise
+  every package is stored twice (copied).
+
 ## Testing
 
 - Unit tests per crate; dpkg cross-check for version ordering.

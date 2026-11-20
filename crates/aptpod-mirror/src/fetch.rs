@@ -326,7 +326,14 @@ impl Http {
             }
             fs::OpenOptions::new().append(true).open(part).map_err(io)?
         } else {
-            fs::File::create(part).map_err(io)?
+            let f = fs::File::create(part).map_err(io)?;
+            // Reserve the space up front (fewer fragments when several
+            // downloads write at once, e.g. on a disk); KEEP_SIZE leaves
+            // the length alone, so resuming still reads how far we got.
+            if size >= 1 << 20 {
+                let _ = rustix::fs::fallocate(&f, rustix::fs::FallocateFlags::KEEP_SIZE, 0, size);
+            }
+            f
         };
         let mut total = have;
         loop {

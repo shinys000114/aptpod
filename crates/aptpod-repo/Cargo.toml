@@ -19,4 +19,4 @@ thiserror.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-aptpod-core.workspace = true
+aptpod-core = { workspace = true, features = ["testutil"] }

@@ -66,7 +66,7 @@ impl HttpMirror {
             extras: vec![],
             keyring: None,
             ignore_missing: BTreeSet::new(),
-            parallel: 4,
+            parallel: 8,
             retries: 3,
             verify_all: false,
             prune: false,
@@ -93,6 +93,8 @@ pub struct DistReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub indices: usize,
+    /// Index files taken over from the current tree (unchanged upstream).
+    pub indices_reused: usize,
     pub packages: usize,
     pub restarts: u32,
 }
@@ -239,9 +241,14 @@ fn run(
         loop {
             let _ = fs::remove_dir_all(&staging);
             match stage_dist(m, ctx, dist, &staging) {
-                Ok((files, indices, packages)) => {
+                Ok(Staging {
+                    files,
+                    indices,
+                    reused,
+                    packages,
+                }) => {
                     (ctx.log)(&format!(
-                        "{dist}: {indices} index file(s), {packages} package file(s)"
+                        "{dist}: {indices} index file(s) ({reused} unchanged), {packages} package file(s)"
                     ));
                     staged.push(Staged {
                         dist: dist.clone(),
@@ -252,6 +259,7 @@ fn run(
                             ok: true,
                             error: None,
                             indices,
+                            indices_reused: reused,
                             packages,
                             restarts,
                         },
@@ -326,6 +334,13 @@ fn run(
     // were (partly) fetched for them and the next run needs them.
     let mut protect: HashSet<String> = clashed.into_iter().collect();
 
+    // New pool files and staged indices must be on disk before any dist
+    // points at them (and before the hash cache vouches for them).
+    if let Err(e) = sync_fs(ctx.dest) {
+        remove_staging(&staged, Path::new(""));
+        return Err(e);
+    }
+
     // 3. Switch every dist whose files are all in place.
     for s in staged {
         let bad: Vec<&String> = s
@@ -386,6 +401,18 @@ fn run(
         return Ok(());
     }
     cleanup(m, ctx, report, &protect)
+}
+
+/// Flushes the filesystem holding `dir` (one `syncfs`, not an fsync per
+/// file).
+pub fn sync_fs(dir: &Path) -> Result<(), Error> {
+    let d = fs::File::open(dir)?;
+    rustix::fs::syncfs(&d).map_err(|e| {
+        Error::Io(std::io::Error::other(format!(
+            "syncfs {}: {e}",
+            dir.display()
+        )))
+    })
 }
 
 fn remove_staging(staged: &[Staged], extra: &Path) {
@@ -461,12 +488,7 @@ fn release_of(m: &HttpMirror, ctx: &Ctx, base: &str) -> Result<(Release, RawFile
 
 /// Fetches Release and the selected indices of `dist` into `staging`;
 /// returns the pool files they reference.
-fn stage_dist(
-    m: &HttpMirror,
-    ctx: &Ctx,
-    dist: &str,
-    staging: &Path,
-) -> Result<(BTreeMap<String, PoolFile>, usize, usize), DistErr> {
+fn stage_dist(m: &HttpMirror, ctx: &Ctx, dist: &str, staging: &Path) -> Result<Staging, DistErr> {
     let base = join_url(&m.url, &format!("dists/{dist}")) + "/";
     let (rel, raw) = release_of(m, ctx, &base)?;
     let pick = |field: &str, want: &[String], what: &str| -> Result<Vec<String>, DistErr> {
@@ -536,52 +558,118 @@ fn stage_dist(
         }
     }
 
-    // Fetch them; a listed file upstream does not serve is absent.
+    // Fetch them, in parallel; a listed file upstream does not serve is
+    // absent. An index the current tree already has with the hash Release
+    // lists is linked over instead of fetched again (it is re-hashed, not
+    // trusted).
     fs::create_dir_all(staging).map_err(|e| DistErr::Fatal(e.to_string()))?;
     let by_hash = rel.by_hash();
-    let mut got: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-    for path in &todo {
-        let entry = &rel.files[path];
-        let dir = path.rsplit_once('/').map_or("", |(d, _)| d);
-        let mut urls = vec![];
-        if by_hash {
+    let current = ctx.dest.join("dists").join(dist);
+    let parse: BTreeSet<String> = groups
+        .iter()
+        .flat_map(|(dir, base_name, _)| {
+            VARIANTS
+                .iter()
+                .filter(|e| parseable(e))
+                .map(move |e| variant_path(dir, base_name, e))
+        })
+        .collect();
+    let items: Vec<&String> = todo.iter().collect();
+    let fetched = par_map(
+        &items,
+        m.parallel,
+        |path| -> Result<Option<(Vec<u8>, bool)>, DistErr> {
+            let entry = &rel.files[*path];
+            let dir = path.rsplit_once('/').map_or("", |(d, _)| d);
             let sep = if dir.is_empty() { "" } else { "/" };
-            urls.push(join_url(
-                &base,
-                &format!("{dir}{sep}by-hash/SHA256/{}", entry.sha256),
-            ));
-        }
-        urls.push(join_url(&base, path));
-        let mut data = None;
-        for url in &urls {
-            match ctx.http.get_retry(url, m.retries, ctx.cancel) {
-                Ok(b) => {
-                    data = Some(b);
-                    break;
+            let out = staging.join(path);
+            let mkdir = |p: &Path| {
+                fs::create_dir_all(p.parent().expect("has parent"))
+                    .map_err(|e| DistErr::Fatal(format!("{}: {e}", p.display())))
+            };
+            let by_hash_copy = |data_at: &Path| -> Result<(), DistErr> {
+                if by_hash {
+                    let bh = staging.join(format!("{dir}{sep}by-hash/SHA256/{}", entry.sha256));
+                    mkdir(&bh)?;
+                    if fs::hard_link(data_at, &bh).is_err() {
+                        fs::copy(data_at, &bh)
+                            .map_err(|e| DistErr::Fatal(format!("{}: {e}", bh.display())))?;
+                    }
                 }
-                Err(FetchError::Missing(_)) => continue,
-                Err(e) => return Err(fe(path, e)),
+                Ok(())
+            };
+            let local = current.join(path);
+            if fs::metadata(&local).is_ok_and(|m| m.len() == entry.size)
+                && let Ok(data) = fs::read(&local)
+                && sha256_hex(&data) == entry.sha256
+            {
+                mkdir(&out)?;
+                if fs::hard_link(&local, &out).is_err() {
+                    fs::write(&out, &data)
+                        .map_err(|e| DistErr::Fatal(format!("{}: {e}", out.display())))?;
+                }
+                by_hash_copy(&out)?;
+                return Ok(Some((data, true)));
+            }
+            let mut urls = vec![];
+            if by_hash {
+                urls.push(join_url(
+                    &base,
+                    &format!("{dir}{sep}by-hash/SHA256/{}", entry.sha256),
+                ));
+            }
+            urls.push(join_url(&base, path));
+            let mut data = None;
+            for url in &urls {
+                match ctx.http.get_retry(url, m.retries, ctx.cancel) {
+                    Ok(b) => {
+                        data = Some(b);
+                        break;
+                    }
+                    Err(FetchError::Missing(_)) => continue,
+                    Err(e) => return Err(fe(path, e)),
+                }
+            }
+            let Some(data) = data else { return Ok(None) };
+            if data.len() as u64 != entry.size || sha256_hex(&data) != entry.sha256 {
+                return Err(DistErr::Changed(format!("{path} does not match Release")));
+            }
+            mkdir(&out)?;
+            fs::write(&out, &data)
+                .map_err(|e| DistErr::Fatal(format!("{}: {e}", out.display())))?;
+            by_hash_copy(&out)?;
+            Ok(Some((data, false)))
+        },
+    );
+    let mut got: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let mut reused = 0;
+    let mut first_err = None;
+    for (path, r) in items.iter().zip(fetched) {
+        match r {
+            Ok(Some((data, was_reused))) => {
+                reused += usize::from(was_reused);
+                if parse.contains(*path) {
+                    got.insert((*path).clone(), data);
+                } else {
+                    got.insert((*path).clone(), Vec::new());
+                }
+            }
+            Ok(None) => {}
+            // Interrupted wins, then a change upstream (restart), then the rest.
+            Err(e) => {
+                let rank = |e: &DistErr| match e {
+                    DistErr::Interrupted => 0,
+                    DistErr::Changed(_) => 1,
+                    DistErr::Fatal(_) => 2,
+                };
+                if first_err.as_ref().is_none_or(|f| rank(&e) < rank(f)) {
+                    first_err = Some(e);
+                }
             }
         }
-        let Some(data) = data else { continue };
-        if data.len() as u64 != entry.size || sha256_hex(&data) != entry.sha256 {
-            return Err(DistErr::Changed(format!("{path} does not match Release")));
-        }
-        let out = staging.join(path);
-        let w = |p: &Path, d: &[u8]| -> Result<(), DistErr> {
-            fs::create_dir_all(p.parent().expect("has parent"))
-                .and_then(|()| fs::write(p, d))
-                .map_err(|e| DistErr::Fatal(format!("{}: {e}", p.display())))
-        };
-        w(&out, &data)?;
-        if by_hash {
-            let sep = if dir.is_empty() { "" } else { "/" };
-            w(
-                &staging.join(format!("{dir}{sep}by-hash/SHA256/{}", entry.sha256)),
-                &data,
-            )?;
-        }
-        got.insert(path.clone(), data);
+    }
+    if let Some(e) = first_err {
+        return Err(e);
     }
 
     // Parse the best variant of every group.
@@ -631,7 +719,42 @@ fn stage_dist(
         fs::write(staging.join(name), data).map_err(|e| DistErr::Fatal(e.to_string()))?;
     }
     let n = files.len();
-    Ok((files, got.len(), n))
+    Ok(Staging {
+        files,
+        indices: got.len(),
+        reused,
+        packages: n,
+    })
+}
+
+/// What [`stage_dist`] staged.
+struct Staging {
+    files: BTreeMap<String, PoolFile>,
+    indices: usize,
+    reused: usize,
+    packages: usize,
+}
+
+/// `f` over `items` on up to `n` threads; results in input order.
+fn par_map<T: Sync, R: Send>(items: &[T], n: usize, f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let next = AtomicUsize::new(0);
+    let out: Vec<Mutex<Option<R>>> = items.iter().map(|_| Mutex::new(None)).collect();
+    std::thread::scope(|s| {
+        for _ in 0..n.clamp(1, items.len().max(1)) {
+            s.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    if i >= items.len() {
+                        return;
+                    }
+                    *out[i].lock().unwrap() = Some(f(&items[i]));
+                }
+            });
+        }
+    });
+    out.into_iter()
+        .map(|m| m.into_inner().unwrap().expect("every item ran"))
+        .collect()
 }
 
 /// Brings every wanted pool file in place; returns the ones that failed.
