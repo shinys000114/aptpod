@@ -403,8 +403,8 @@ nothing, and `aptpod mirror sync <name> --prune` deletes it once reviewed.
 Server: mirror syncs do not touch the repository database, so they run on
 a mirror worker pool next to the single writer (`mirror:<name>` resource
 keys, one sync per mirror at a time, `mirror_parallel` workers, default 1).
-Every job gets a log file (`<data_dir>/logs/<job>.log`) streamed over SSE;
-`aptpod jobs logs <id> [--follow]`. SIGTERM stops downloads between files
+Every job gets a log file (`<data_dir>/logs/<job>.log`), read by offset
+(`aptpod log <id> -f` polls it). SIGTERM stops downloads between files
 and sends SIGTERM to rsync; the job ends `interrupted`. Status per mirror:
 last start/end/result/bytes/files, exposed by the API and written as JSON
 and SVG badge into an optional public `status_dir`.
@@ -413,11 +413,12 @@ Scheduler: per-mirror cron expressions (5 fields; UTC unless server.toml
 sets `timezone`, e.g. `Asia/Seoul` - read from `/usr/share/zoneinfo`,
 since local time in a static multi-threaded binary cannot come from libc;
 verified before relying on it) plus
-`aptpod mirror sync <name|--all>` on demand; a run that is still busy is not
+`aptpod mirror sync <name>` on demand (`--all` in P4d); a run that is still busy is not
 started twice; missed runs while the server was down are not replayed.
 
-CLI: `aptpod mirror ls|show|create|edit|delete|sync|status|check`, `jobs
-logs`. Done when, for the reference PPA and the same selection, every file
+CLI: `aptpod mirror ls|show|get|create|set|edit|delete|sync|stop`,
+`aptpod log`; P4d adds `check` (probe upstreams) and `sync --all`. Done
+when, for the reference PPA and the same selection, every file
 the mirrored indices reference is present with the right hash, every
 index and Release file written is byte-equal to upstream, `apt-get update
 && apt-get install` works from the result in a container, and the rsync
@@ -437,6 +438,68 @@ failed dist; and real apt in a container against a mirrored subset;
 P4b mirror model, worker pool, job logs, API and CLI; P4c rsync kinds;
 P4d scheduler, status JSON/badges, probe; P4e side-by-side comparison on
 the reference host (into a separate directory, nothing switched).
+
+Progress: P4a done - `aptpod-mirror::http::sync` (engine only, no
+server yet). Upstream Release checked with rpgp (also verified against the
+reference PPA's RSA/SHA512 signatures, read-only), checksums parsed only
+from verified text, InRelease vs Release tables compared; index selection
+per component/architecture (binary-all, udebs, sources, `extras` globs;
+404 for an extra variant is fine, no usable index for a selected one fails
+the dist by name); a dist restarts (up to 3x) when upstream changes under
+it; pool files fetched in parallel with resume (`.aptpod-part`, servers
+ignoring Range, 416), size + sha256 checks, retries for transient errors,
+cancellation per chunk; a dist is switched only when all its files are in
+place, otherwise it keeps its old indices; cleanup from the indices on
+disk (failed and unmanaged dists keep their files) with prune/brake;
+hash cache in the state dir, saved even on failure. reqwest's blocking
+client cannot combine a per-read timeout with reading bodies (it panics
+outside a runtime), so `Http` owns a small tokio runtime and runs each
+request in one `block_on`; callers must not be on a tokio worker (P4b:
+run syncs on plain threads). Tests: 11 scenarios against a local
+fault-injecting server, plus apt in bookworm/trixie/jammy/noble against a
+mirrored subset with `signed-by` the upstream key.
+
+Checked against the reference PPA's real indices (a copy taken read-only
+from the reference host, not the vendor): all 7 dists verify, all 147
+selected index groups are usable and match Release, 5036 pool files
+(20.9 GB), no cross-dist path clashes, no unusual characters in file
+names. After review: files fetched for a dist that then failed stay
+protected from cleanup (and are not fetched again), cleanup is skipped
+while a configured dist has no indices at all, URLs are percent-encoded
+per segment, a stalled connection times out per read and resumes, local
+write errors stop the run, in-memory reads are capped at 1 GiB, and
+`prune` is off unless set.
+
+For P4b: InRelease is read (capped) before it is verified; by-hash keeps
+only the current generation across a switch (irrelevant for the
+reference upstream, which has no by-hash).
+
+Progress: P4b done - mirror definitions in server.db (`kind = "http"`,
+URL, path under `mirror_roots`, dists/components/architectures, udebs,
+sources, extras, armored upstream keyring or `insecure`, ignore_missing,
+parallel, retries, prune, max_delete, enabled), checked on save: paths
+never overlap publishes or other mirrors (also enforced for publishes),
+a non-empty destination needs `adopt` and is then stored with prune off.
+Syncs run on `mirror_workers` plain threads, one per mirror at a time,
+each a job with `<data_dir>/logs/<job>.log` and per-mirror state in
+`<data_dir>/mirrors/<name>/`; stop and shutdown interrupt between chunks
+(job and mirror status `interrupted`, nothing switched). API:
+`/api/v1/mirrors` (admin for definitions, publisher for sync/stop),
+`/api/v1/jobs/<id>/log?offset=`. CLI: `aptpod mirror
+ls|show|get|create|set|edit|delete|sync [--wait --prune
+--verify-all]|stop`, `aptpod log <job> [-f]`; `config export/import`
+carries `[mirrors.<name>]`. End-to-end test of the real server and CLI
+against a local signed upstream. `sync --prune` on a mirror whose prune is
+off needs admin; a panicking sync fails its job without killing the
+worker; URLs with credentials are refused (definitions are readable by
+every reader).
+
+Open points: stop and shutdown can wait up to the 60 s read timeout on a
+stalled upstream (systemd's default stop timeout is 90 s); job log files
+are never removed; mirror definition changes are not in the job log; a
+binary keyring with several keys given to `mirror create --keyring` is
+untested. Next: P4c rsync kinds, P4d scheduler and
+public status.
 
 ## Testing
 

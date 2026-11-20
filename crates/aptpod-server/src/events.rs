@@ -64,6 +64,21 @@ impl Job {
         self.event.id
     }
 
+    /// Ends the job in `state` (done, failed, interrupted).
+    pub fn end(
+        mut self,
+        state: &'static str,
+        summary: &str,
+        error: Option<&str>,
+    ) -> Result<(), ApiError> {
+        self.st.auth.job_end(self.event.id, state, summary, error)?;
+        self.event.state = state;
+        self.event.summary = Some(summary.into()).filter(|s: &String| !s.is_empty());
+        self.event.error = error.map(String::from);
+        let _ = self.st.events.send(self.event);
+        Ok(())
+    }
+
     pub fn finish(mut self, result: Result<&str, &str>) -> Result<(), ApiError> {
         self.st.auth.job_finish(self.event.id, result)?;
         match result {

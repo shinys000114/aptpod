@@ -150,6 +150,16 @@ name = "aptpod-mirror"
 version = "0.0.0"
 dependencies = [
  "aptpod-core",
+ "flate2",
+ "glob",
+ "liblzma",
+ "reqwest",
+ "serde",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror",
+ "time",
+ "tokio",
 ]
 
 [[package]]

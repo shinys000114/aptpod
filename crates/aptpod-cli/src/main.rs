@@ -4,6 +4,7 @@
 
 mod account;
 mod client;
+mod mirror;
 mod ops;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -95,6 +96,16 @@ enum Cmd {
         #[arg(short = 'n', long, default_value_t = 20)]
         limit: usize,
         /// Then print job events as they happen (until interrupted).
+        #[arg(short, long)]
+        follow: bool,
+    },
+    /// Mirrors of remote repositories.
+    #[command(subcommand)]
+    Mirror(mirror::MirrorCmd),
+    /// Prints a job's log (e.g. a mirror sync).
+    Log {
+        job: i64,
+        /// Keep printing while the job runs.
         #[arg(short, long)]
         follow: bool,
     },
@@ -335,6 +346,10 @@ fn run(cli: Cli) -> Result<(), CliError> {
             }
         }
         Cmd::Ops(cmd) => ops::run(&Client::new(&need_server()?, token)?, cmd, json)?,
+        Cmd::Mirror(cmd) => mirror::run(&Client::new(&need_server()?, token)?, cmd, json)?,
+        Cmd::Log { job, follow } => {
+            mirror::follow(&Client::new(&need_server()?, token)?, job, follow)?;
+        }
         Cmd::Account(cmd) => account::run(&Client::new(&need_server()?, token)?, cmd, json)?,
         Cmd::Jobs { limit, follow } => {
             let c = Client::new(&need_server()?, token)?;

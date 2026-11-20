@@ -6,7 +6,10 @@ mod api;
 mod authdb;
 mod config;
 mod events;
+mod mirror_api;
+mod mirrors;
 mod ops;
+mod runner;
 mod users;
 mod writer;
 
@@ -207,6 +210,8 @@ fn serve(cfg: Config) -> Result<(), String> {
     if n > 0 {
         tracing::warn!("{n} job(s) were interrupted by the last shutdown");
     }
+    auth.mirrors_interrupted()
+        .map_err(|e| format!("server database: {e}"))?;
 
     let mut repo = Repo::open(&data).map_err(|e| format!("repository: {e}"))?;
     repo.set_signer(cfg.signer().map(|s| Box::new(s) as Box<dyn Signer + Send>));
@@ -232,7 +237,9 @@ fn serve(cfg: Config) -> Result<(), String> {
         logins: tokio::sync::Semaphore::new(4),
         events: tokio::sync::broadcast::channel(256).0,
         stopping: tokio::sync::watch::channel(false).0,
+        mirror_runner: runner::Runner::default(),
     });
+    runner::Runner::start(&state, cfg.mirror_workers);
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -262,7 +269,9 @@ fn serve(cfg: Config) -> Result<(), String> {
             .await
             .map_err(|e| format!("serving: {e}"))
     });
-    // Finish the job in progress before exiting.
+    // Finish the job in progress before exiting; mirror syncs stop between
+    // chunks and end `interrupted`.
+    state.mirror_runner.shutdown();
     state.writer.shutdown();
     tracing::info!("stopped");
     drop(lock);

@@ -18,6 +18,12 @@ pub struct Config {
     /// root cannot be created or moved through the API.
     #[serde(default)]
     pub publish_roots: Vec<PathBuf>,
+    /// Directories mirrors may be written under (usually another disk).
+    #[serde(default)]
+    pub mirror_roots: Vec<PathBuf>,
+    /// Mirror syncs that may run at the same time.
+    #[serde(default = "one")]
+    pub mirror_workers: usize,
     /// Largest accepted upload, in bytes.
     #[serde(default = "default_upload_limit")]
     pub upload_limit: u64,
@@ -44,6 +50,9 @@ fn default_listen() -> String {
 fn default_data_dir() -> PathBuf {
     "/var/lib/aptpod".into()
 }
+fn one() -> usize {
+    1
+}
 fn default_upload_limit() -> u64 {
     2 << 30
 }
@@ -52,14 +61,25 @@ impl Config {
     pub fn load(path: &Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let cfg: Config = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-        for root in &cfg.publish_roots {
-            if !is_clean_absolute(root) {
-                return Err(format!(
-                    "{}: publish_roots entry {} must be an absolute path without `..`",
-                    path.display(),
-                    root.display()
-                ));
+        for (what, roots) in [
+            ("publish_roots", &cfg.publish_roots),
+            ("mirror_roots", &cfg.mirror_roots),
+        ] {
+            for root in roots {
+                if !is_clean_absolute(root) {
+                    return Err(format!(
+                        "{}: {what} entry {} must be an absolute path without `..`",
+                        path.display(),
+                        root.display()
+                    ));
+                }
             }
+        }
+        if cfg.mirror_workers == 0 {
+            return Err(format!(
+                "{}: mirror_workers must be at least 1",
+                path.display()
+            ));
         }
         Ok(cfg)
     }
@@ -78,34 +98,44 @@ impl Config {
 
     /// Whether `path` may hold a publish.
     pub fn allows_publish_path(&self, path: &Path) -> Result<(), String> {
-        if !is_clean_absolute(path) {
-            return Err(format!(
-                "publish path {} must be absolute, without `.` or `..`",
-                path.display()
-            ));
-        }
-        if self.publish_roots.is_empty() {
-            return Err("no publish_roots are configured in server.toml".into());
-        }
-        if self
-            .publish_roots
-            .iter()
-            .any(|r| path.starts_with(r) && path != r.as_path())
-        {
-            Ok(())
-        } else {
-            Err(format!(
-                "publish path {} is not under a configured publish root ({})",
-                path.display(),
-                self.publish_roots
-                    .iter()
-                    .map(|r| r.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ))
-        }
+        allows(path, &self.publish_roots, "publish", "publish_roots")
+    }
+
+    /// Whether `path` may hold a mirror.
+    pub fn allows_mirror_path(&self, path: &Path) -> Result<(), String> {
+        allows(path, &self.mirror_roots, "mirror", "mirror_roots")
     }
 }
+
+fn allows(path: &Path, roots: &[PathBuf], what: &str, key: &str) -> Result<(), String> {
+    if !is_clean_absolute(path) {
+        return Err(format!(
+            "{what} path {} must be absolute, without `.` or `..`",
+            path.display()
+        ));
+    }
+    if roots.is_empty() {
+        return Err(format!("no {key} are configured in server.toml"));
+    }
+    if roots
+        .iter()
+        .any(|r| path.starts_with(r) && path != r.as_path())
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "{what} path {} is not under a configured {what} root ({})",
+            path.display(),
+            roots
+                .iter()
+                .map(|r| r.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    }
+}
+
+impl Config {}
 
 fn is_clean_absolute(p: &Path) -> bool {
     p.is_absolute()

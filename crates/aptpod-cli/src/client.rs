@@ -139,8 +139,12 @@ impl Client {
     }
 
     pub fn delete(&self, path: &str) -> Result<(), CliError> {
-        let _: Value = self.send(self.req(Method::DELETE, path))?;
+        let _: Value = self.delete_json(path)?;
         Ok(())
+    }
+
+    pub fn delete_json(&self, path: &str) -> Result<Value, CliError> {
+        self.send(self.req(Method::DELETE, path))
     }
 
     /// Job events from `/api/v1/events` (server-sent events), until the

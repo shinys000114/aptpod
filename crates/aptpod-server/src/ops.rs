@@ -316,6 +316,7 @@ async fn set_layout(
     st.cfg
         .allows_publish_path(&req.layout.path)
         .map_err(ApiError::invalid)?;
+    crate::mirror_api::refuse_mirror_overlap(&st, &req.layout.path, None)?;
     let resource = format!("publish:{alias}");
     plan_job(
         &st,
@@ -504,12 +505,15 @@ async fn snapshot_prune(
 struct ConfigView {
     #[serde(default)]
     publishes: BTreeMap<String, Layout>,
+    #[serde(default)]
+    mirrors: BTreeMap<String, crate::mirrors::MirrorDef>,
 }
 
 async fn config_export(State(st): St, caller: Caller) -> Res<ConfigView> {
     caller.need(Role::Reader)?;
     let publishes = read(&st, |r| r.publishes()).await?.into_iter().collect();
-    Ok(Json(ConfigView { publishes }))
+    let mirrors = st.auth.mirrors()?.into_iter().collect();
+    Ok(Json(ConfigView { publishes, mirrors }))
 }
 
 #[derive(Deserialize)]
@@ -527,11 +531,35 @@ struct ImportReq {
 }
 
 /// Creates the publishes of the file that do not exist and updates the
-/// layouts of those that do, as one plan. Publishes missing from the file
-/// are left alone (reported as warnings).
+/// layouts of those that do, as one plan; mirrors are created or updated
+/// with it. Publishes and mirrors missing from the file are left alone
+/// (reported as warnings).
 async fn config_import(State(st): St, caller: Caller, Json(req): Json<ImportReq>) -> Res<Outcome> {
     caller.need(Role::Admin)?;
     let pubs = req.config.publishes;
+    // Publish paths against the mirrors as they will be after the import.
+    let mut mirror_paths: BTreeMap<String, std::path::PathBuf> = st
+        .auth
+        .mirrors()?
+        .into_iter()
+        .map(|(n, d)| (n, d.path))
+        .collect();
+    for (n, d) in &req.config.mirrors {
+        mirror_paths.insert(n.clone(), d.path.clone());
+    }
+    for (a, l) in &pubs {
+        if let Some((m, _)) = mirror_paths
+            .iter()
+            .find(|(_, p)| aptpod_repo::layout::paths_overlap(&l.path, p))
+        {
+            return Err(ApiError::invalid(format!(
+                "publish {a:?} and mirror {m:?} have overlapping paths"
+            )));
+        }
+    }
+    let (mirror_changes, mirror_lines, mirror_warnings) =
+        crate::mirror_api::import_changes(&st, req.config.mirrors, req.adopt).await?;
+    let apply = req.apply;
     let list: Vec<(&String, &Layout)> = pubs.iter().collect();
     for (i, (a, la)) in list.iter().enumerate() {
         st.cfg
@@ -554,7 +582,7 @@ async fn config_import(State(st): St, caller: Caller, Json(req): Json<ImportReq>
             .join(",")
     };
     let (force, adopt) = (req.force, req.adopt);
-    plan_job(
+    let out = plan_job(
         &st,
         &caller,
         "import",
@@ -582,7 +610,17 @@ async fn config_import(State(st): St, caller: Caller, Json(req): Json<ImportReq>
             Ok(plan)
         },
     )
-    .await
+    .await?;
+    let mut out = out.0;
+    out.plan.lines.extend(mirror_lines);
+    out.plan.warnings.extend(mirror_warnings);
+    out.plan.empty &= mirror_changes.is_empty();
+    if apply {
+        for (name, def) in &mirror_changes {
+            st.auth.mirror_put(name, def)?;
+        }
+    }
+    Ok(Json(out))
 }
 
 // ---- search, maintenance -------------------------------------------------

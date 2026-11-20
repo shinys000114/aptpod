@@ -1204,3 +1204,396 @@ fn signing() {
     verify(&s, "noble");
     assert!(srv.stop().success());
 }
+
+/// Serves `root` over HTTP (GET only, no ranges) for mirror tests; pool
+/// files are answered after `delay`.
+fn static_server(root: PathBuf, delay: Duration) -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for conn in listener.incoming().flatten() {
+            let root = root.clone();
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(conn.try_clone().unwrap());
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+                loop {
+                    let mut h = String::new();
+                    if reader.read_line(&mut h).unwrap_or(0) == 0 || h == "\r\n" {
+                        break;
+                    }
+                }
+                let path = line.split_whitespace().nth(1).unwrap_or("/");
+                let rel = path
+                    .trim_start_matches('/')
+                    .replace("%2B", "+")
+                    .replace("%7E", "~");
+                let file = root.join(&rel);
+                if rel.starts_with("pool/") {
+                    std::thread::sleep(delay);
+                }
+                let mut out = conn;
+                match std::fs::read(&file) {
+                    Ok(data) if !rel.contains("..") && file.is_file() => {
+                        let _ = write!(
+                            out,
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            data.len()
+                        );
+                        let _ = out.write_all(&data);
+                    }
+                    _ => {
+                        let _ = out.write_all(
+                            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        );
+                    }
+                }
+            });
+        }
+    });
+    url
+}
+
+/// Mirrors through the server: definitions and their rules, syncs as jobs
+/// with logs, adoption without deleting, a failing upstream key, config
+/// export/import, edit and delete.
+#[test]
+fn mirrors() {
+    use aptpod_core::deb::read_deb;
+    use aptpod_core::index::ReleaseMeta;
+    use aptpod_core::publish::{ComponentSpec, DistSpec, PublishPackage, publish_dist};
+
+    let Some(key) = aptpod_core::testutil::TestKey::new() else {
+        return;
+    };
+    let up = tempfile::tempdir().unwrap();
+    let archive = up.path().join("archive");
+    let pkgs: Vec<PathBuf> = [
+        ("up-hello", "1.0", "amd64"),
+        ("up-tool", "2.0", "all"),
+        ("up-arm", "1.0", "arm64"),
+    ]
+    .iter()
+    .map(|(n, v, a)| aptpod_core::testutil::build_deb(up.path(), n, v, a, "xz", ""))
+    .collect();
+    let spec = DistSpec {
+        name: "noble".into(),
+        meta: ReleaseMeta::new("noble", "Up", "up"),
+        architectures: vec!["amd64".into(), "arm64".into()],
+        components: vec![ComponentSpec {
+            name: "main".into(),
+            packages: pkgs
+                .iter()
+                .map(|f| PublishPackage {
+                    info: read_deb(f).unwrap(),
+                    file: f.clone(),
+                    mode: Default::default(),
+                })
+                .collect(),
+        }],
+    };
+    publish_dist(&archive, &spec, Some(&key.signer())).unwrap();
+    let url = static_server(archive.clone(), Duration::ZERO);
+    let slow_url = static_server(archive.clone(), Duration::from_secs(3));
+
+    let Some((dir, bin, cfg)) = prepare_extra("") else {
+        return;
+    };
+    let d = dir.path();
+    let (trees, mroot) = (d.join("trees"), d.join("mirrors"));
+    let base = std::fs::read_to_string(&cfg).unwrap();
+    std::fs::write(
+        &cfg,
+        format!(
+            "{base}mirror_roots = [{:?}, {:?}]\nmirror_workers = 2\n",
+            mroot.display().to_string(),
+            trees.display().to_string()
+        ),
+    )
+    .unwrap();
+    let srv = Server::start(&bin, &cfg);
+    let cli = |name: &str| Cli {
+        creds: d.join(format!("{name}.toml")),
+        url: srv.url.clone(),
+    };
+    let (admin, ci) = (cli("admin"), cli("ci"));
+    login(&admin, "admin");
+    login(&ci, "ci");
+    let keyfile = d.join("upstream.gpg");
+    std::fs::write(&keyfile, &key.public).unwrap();
+    let kf = keyfile.display().to_string();
+    let dest = mroot.join("up");
+    let dp = dest.display().to_string();
+    let create = |c: &Cli, name: &str, path: &str, extra: &[&str], code: i32| {
+        let mut args = vec![
+            "mirror",
+            "create",
+            name,
+            "--url",
+            &url,
+            "--path",
+            path,
+            "--dist",
+            "noble",
+            "--component",
+            "main",
+            "--arch",
+            "amd64",
+        ];
+        args.extend_from_slice(extra);
+        if code == 0 {
+            c.ok(&args)
+        } else {
+            c.fails(&args, code)
+        }
+    };
+
+    // Definitions: admin only, a key (or --insecure), under mirror_roots.
+    assert!(create(&ci, "up", &dp, &["--keyring", &kf], 7).contains("admin"));
+    assert!(create(&admin, "up", &dp, &[], 1).contains("keyring"));
+    let outside = d.join("elsewhere").display().to_string();
+    assert!(
+        create(&admin, "up", &outside, &["--keyring", &kf], 1)
+            .contains("not under a configured mirror root")
+    );
+    create(&admin, "up", &dp, &["--keyring", &kf], 0);
+    // Mirrors and publishes never share a tree.
+    let tp = trees.join("t").display().to_string();
+    admin.ok(&[
+        "publish",
+        "create",
+        "t",
+        "--path",
+        &tp,
+        "--dist",
+        "noble",
+        "--component",
+        "main",
+        "--arch",
+        "amd64",
+        "--no-sign",
+        "-y",
+    ]);
+    assert!(create(&admin, "m2", &tp, &["--insecure"], 1).contains("overlaps publish"));
+    // trees/ is both a publish and a mirror root: a publish inside a
+    // mirror's tree is refused as well.
+    let m3 = trees.join("m3").display().to_string();
+    create(&admin, "m3", &m3, &["--insecure"], 0);
+    let inside = trees.join("m3/sub").display().to_string();
+    let err = admin.fails(
+        &[
+            "publish",
+            "create",
+            "p2",
+            "--path",
+            &inside,
+            "--dist",
+            "noble",
+            "--component",
+            "main",
+            "--arch",
+            "amd64",
+            "--no-sign",
+            "-y",
+        ],
+        1,
+    );
+    assert!(err.contains("overlaps the tree of mirror \"m3\""), "{err}");
+    admin.ok(&["mirror", "delete", "m3"]);
+
+    // Sync as a job, following its log.
+    let out = ci.ok(&["mirror", "sync", "up", "--wait"]);
+    assert!(
+        out.contains("switched to the new indices") && out.contains("done:"),
+        "{out}"
+    );
+    for f in [
+        "dists/noble/InRelease",
+        "dists/noble/main/binary-amd64/Packages.xz",
+    ] {
+        assert_eq!(
+            std::fs::read(archive.join(f)).unwrap(),
+            std::fs::read(dest.join(f)).unwrap(),
+            "{f}"
+        );
+    }
+    assert!(!dest.join("dists/noble/main/binary-arm64").exists());
+    let ls = ci.ok(&["mirror", "ls"]);
+    assert!(ls.starts_with("up\t") && ls.contains("\tdone\t"), "{ls}");
+    let out = ci.ok(&["mirror", "sync", "up", "--wait"]);
+    assert!(out.contains("0 file(s) downloaded"), "{out}");
+    let jobs = ci.ok(&["jobs"]);
+    let job: String = jobs
+        .lines()
+        .find(|l| l.contains("mirror-sync mirror:up"))
+        .and_then(|l| l.split_whitespace().next())
+        .unwrap()
+        .trim_start_matches('#')
+        .to_string();
+    assert!(ci.ok(&["log", &job]).contains("mirror up:"));
+    assert!(
+        ci.fails(&["mirror", "stop", "up"], 1)
+            .contains("not syncing")
+    );
+
+    // Adopting a directory that already holds files: nothing is deleted
+    // until asked once.
+    let adopted = mroot.join("adopted");
+    let stray = adopted.join("pool/main/s/stray/stray_1_all.deb");
+    std::fs::create_dir_all(stray.parent().unwrap()).unwrap();
+    std::fs::write(&stray, "old tool's file").unwrap();
+    let ap = adopted.display().to_string();
+    assert!(create(&admin, "adopted", &ap, &["--keyring", &kf], 1).contains("already holds files"));
+    let out = admin.run(
+        &[
+            "mirror",
+            "create",
+            "adopted",
+            "--url",
+            &url,
+            "--path",
+            &ap,
+            "--dist",
+            "noble",
+            "--keyring",
+            &kf,
+            "--adopt",
+        ],
+        "",
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("prune off"),
+        "{}",
+        text(&out)
+    );
+    let out = ci.ok(&["mirror", "sync", "adopted", "--wait"]);
+    assert!(out.contains("1 unreferenced left"), "{out}");
+    assert!(stray.exists());
+    // Deleting what was adopted is the admin's decision.
+    assert!(
+        ci.fails(&["mirror", "sync", "adopted", "--prune", "--wait"], 7)
+            .contains("admin")
+    );
+    assert!(stray.exists());
+    admin.ok(&["mirror", "sync", "adopted", "--prune", "--wait"]);
+    assert!(!stray.exists());
+
+    // A key upstream did not sign with: the job fails, the mirror says so.
+    let other = aptpod_core::testutil::TestKey::new().unwrap();
+    let otherfile = d.join("other.gpg");
+    std::fs::write(&otherfile, &other.public).unwrap();
+    let wp = mroot.join("wrong").display().to_string();
+    create(
+        &admin,
+        "wrong",
+        &wp,
+        &["--keyring", &otherfile.display().to_string()],
+        0,
+    );
+    let err = ci.fails(&["mirror", "sync", "wrong", "--wait"], 1);
+    assert!(err.contains("failed"), "{err}");
+    assert!(
+        ci.ok(&["mirror", "show", "wrong"])
+            .contains("# last sync: failed")
+    );
+
+    // Stopping a running sync; the job ends interrupted.
+    let sp = mroot.join("slow").display().to_string();
+    admin.ok(&[
+        "mirror",
+        "create",
+        "slow",
+        "--url",
+        &slow_url,
+        "--path",
+        &sp,
+        "--dist",
+        "noble",
+        "--keyring",
+        &kf,
+    ]);
+    let started = ci.ok(&["mirror", "sync", "slow"]);
+    let job = started.split_whitespace().nth(1).unwrap().to_string();
+    assert!(
+        ci.fails(&["mirror", "sync", "slow"], 4)
+            .contains("already syncing")
+    );
+    std::thread::sleep(Duration::from_millis(800));
+    ci.ok(&["mirror", "stop", "slow"]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while ci.ok(&["mirror", "show", "slow"]).contains("syncing now")
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(
+        ci.ok(&["mirror", "show", "slow"])
+            .contains("# last sync: interrupted")
+    );
+    assert!(ci.ok(&["jobs"]).contains(&format!("#{job} ")));
+    assert!(!mroot.join("slow/dists/noble").exists(), "nothing switched");
+
+    // Config export/import carries mirrors; edit through $VISUAL.
+    let exported = admin.ok(&["config", "export"]);
+    assert!(
+        exported.contains("[mirrors.up]") && exported.contains("BEGIN PGP PUBLIC KEY BLOCK"),
+        "{exported}"
+    );
+    let changed = exported.replacen("parallel = 4", "parallel = 2", 1);
+    let out = admin.run(&["config", "import", "-", "-y"], &changed);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("mirror adopted: update")
+            || String::from_utf8_lossy(&out.stdout).contains("mirror up: update"),
+        "{}",
+        text(&out)
+    );
+    let again = admin.run(&["config", "import", "-", "-y"], &changed);
+    assert!(
+        String::from_utf8_lossy(&again.stdout).contains("nothing to do"),
+        "{}",
+        text(&again)
+    );
+    let out = admin.run_env(
+        &["mirror", "edit", "up"],
+        "",
+        &[(
+            "VISUAL",
+            "sed -i s/max_delete\\ =\\ 10000/max_delete\\ =\\ 7/",
+        )],
+    );
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(
+        admin
+            .ok(&["mirror", "get", "up"])
+            .contains("max_delete = 7")
+    );
+
+    // Forgetting a mirror leaves its tree.
+    assert!(
+        admin
+            .ok(&["mirror", "delete", "wrong"])
+            .contains("still at")
+    );
+    assert!(!ci.ok(&["mirror", "ls"]).contains("wrong\t"));
+    assert!(dest.join("dists/noble/InRelease").is_file());
+
+    // Shutting down during a sync: the server stops promptly, the sync is
+    // interrupted and says so after the restart.
+    ci.ok(&["mirror", "sync", "slow"]);
+    std::thread::sleep(Duration::from_millis(800));
+    let t = std::time::Instant::now();
+    assert!(srv.stop().success());
+    assert!(t.elapsed() < Duration::from_secs(8), "{:?}", t.elapsed());
+    let srv = Server::start(&bin, &cfg);
+    let ci = Cli {
+        url: srv.url.clone(),
+        ..ci
+    };
+    let token = ci.token();
+    assert!(
+        ci.ok(&["--token", &token, "mirror", "show", "slow"])
+            .contains("# last sync: interrupted")
+    );
+    assert!(srv.stop().success());
+}

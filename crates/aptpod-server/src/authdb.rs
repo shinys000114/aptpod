@@ -30,6 +30,21 @@ CREATE TABLE IF NOT EXISTS tokens (
     created INTEGER NOT NULL,
     last_used INTEGER
 );
+CREATE TABLE IF NOT EXISTS mirrors (
+    name TEXT PRIMARY KEY,
+    def TEXT NOT NULL,
+    created INTEGER NOT NULL,
+    updated INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS mirror_status (
+    name TEXT PRIMARY KEY,
+    job INTEGER,
+    started INTEGER,
+    finished INTEGER,
+    state TEXT,
+    summary TEXT,
+    report TEXT
+);
 CREATE TABLE IF NOT EXISTS jobs (
     id INTEGER PRIMARY KEY,
     kind TEXT NOT NULL,
@@ -183,7 +198,7 @@ impl AuthDb {
         })
     }
 
-    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+    pub(crate) fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -347,6 +362,11 @@ impl AuthDb {
             Ok(s) => ("done", s, None),
             Err(e) => ("failed", "", Some(e)),
         };
+        self.job_end(id, state, summary, error)
+    }
+
+    /// Ends a job in `state` (done, failed, interrupted).
+    pub fn job_end(&self, id: i64, state: &str, summary: &str, error: Option<&str>) -> R<()> {
         self.conn().execute(
             "UPDATE jobs SET state = ?2, finished = ?3, summary = ?4, error = ?5 WHERE id = ?1",
             params![id, state, now(), summary, error],
@@ -362,13 +382,21 @@ impl AuthDb {
         )
     }
 
+    pub fn job(&self, id: i64) -> R<Option<Job>> {
+        Ok(self.jobs_where("WHERE id = ?1", id, 1)?.pop())
+    }
+
     pub fn jobs(&self, limit: usize) -> R<Vec<Job>> {
+        self.jobs_where("WHERE ?1 = ?1", 0, limit)
+    }
+
+    fn jobs_where(&self, cond: &str, arg: i64, limit: usize) -> R<Vec<Job>> {
         let c = self.conn();
-        let mut stmt = c.prepare(
+        let mut stmt = c.prepare(&format!(
             "SELECT id, kind, resource, user, state, created, finished, summary, error
-             FROM jobs ORDER BY id DESC LIMIT ?1",
-        )?;
-        let rows = stmt.query_map([limit as i64], |r| {
+             FROM jobs {cond} ORDER BY id DESC LIMIT ?2"
+        ))?;
+        let rows = stmt.query_map(params![arg, limit as i64], |r| {
             Ok(Job {
                 id: r.get(0)?,
                 kind: r.get(1)?,

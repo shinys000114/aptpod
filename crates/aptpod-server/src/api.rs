@@ -37,6 +37,7 @@ pub struct AppState {
     pub events: tokio::sync::broadcast::Sender<crate::events::JobEvent>,
     /// Set when shutting down; ends event streams so connections close.
     pub stopping: tokio::sync::watch::Sender<bool>,
+    pub mirror_runner: crate::runner::Runner,
 }
 
 pub(crate) type St = State<Arc<AppState>>;
@@ -56,6 +57,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/publishes/{alias}/packages", get(packages))
         .route("/api/v1/publishes/{alias}/add", post(add))
         .route("/api/v1/jobs", get(jobs))
+        .merge(crate::mirror_api::routes())
         .route("/api/v1/events", get(crate::events::events))
         .merge(crate::ops::routes())
         .merge(crate::users::routes())
@@ -449,13 +451,13 @@ struct ChangeView {
 }
 
 #[derive(Serialize)]
-struct PlanView {
-    lines: Vec<String>,
+pub(crate) struct PlanView {
+    pub(crate) lines: Vec<String>,
     changes: Vec<ChangeView>,
-    warnings: Vec<String>,
+    pub(crate) warnings: Vec<String>,
     bases: Vec<(String, Option<i64>)>,
     destructive: bool,
-    empty: bool,
+    pub(crate) empty: bool,
 }
 
 impl PlanView {
@@ -479,7 +481,7 @@ impl PlanView {
 
 #[derive(Serialize)]
 pub(crate) struct Outcome {
-    plan: PlanView,
+    pub(crate) plan: PlanView,
     #[serde(skip_serializing_if = "Option::is_none")]
     applied: Option<Applied>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -581,6 +583,7 @@ async fn create_publish(State(st): St, caller: Caller, Json(req): Json<CreateReq
     st.cfg
         .allows_publish_path(&req.layout.path)
         .map_err(ApiError::invalid)?;
+    crate::mirror_api::refuse_mirror_overlap(&st, &req.layout.path, None)?;
     let resource = format!("publish:{}", req.alias);
     plan_job(
         &st,

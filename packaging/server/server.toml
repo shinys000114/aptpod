@@ -13,6 +13,13 @@ data_dir = "/var/lib/aptpod"
 # serves them). The aptpod user needs write access.
 publish_roots = []
 
+# Mirrors can only be written under these directories (often a separate,
+# larger disk). The aptpod user needs write access.
+mirror_roots = []
+
+# Mirror syncs that may run at the same time.
+#mirror_workers = 1
+
 # Largest accepted upload in bytes (default 2 GiB).
 #upload_limit = 2147483648
 

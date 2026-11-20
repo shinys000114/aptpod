@@ -8,8 +8,9 @@ An apt repository server written from scratch in Rust:
   kept) or re-signed with your key, with the upstream layout replicated,
 - a REST API, a web UI and the `aptpod` CLI, scheduled jobs.
 
-**Status: pre-alpha.** Local repositories work through the server and the
-CLI; mirrors and the web UI are not there yet. See
+**Status: pre-alpha.** Local repositories and verbatim HTTP mirrors work
+through the server and the CLI; rsync mirrors, schedules and the web UI
+are not there yet. See
 [docs/plan.md](docs/plan.md).
 
 ## Quick start
@@ -43,7 +44,8 @@ repository changed since the preview.
 | all layouts as one file | `aptpod config export > repos.toml`, `aptpod config import repos.toml` |
 | CI token | `aptpod token create jenkins`, then `APTPOD_TOKEN=... aptpod add ...` |
 | users (admin) | `aptpod user add bob --role publisher`, `aptpod user ls` |
-| watch jobs | `aptpod jobs --follow` |
+| watch jobs | `aptpod jobs --follow`, `aptpod log <job> -f` |
+| mirror a remote repository (upstream signature kept) | `aptpod mirror create debian --url http://deb.example.org/debian/ --path /srv/mirror/debian --dist bookworm --arch amd64 --keyring debian.gpg`, `aptpod mirror sync debian --wait` |
 | maintenance (admin) | `aptpod gc`, `aptpod repair` |
 
 Roles: `reader` (read only), `publisher` (packages, snapshots, rollback),

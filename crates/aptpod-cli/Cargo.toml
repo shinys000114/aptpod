@@ -22,6 +22,9 @@ toml.workspace = true
 tempfile.workspace = true
 time.workspace = true
 
+[dev-dependencies]
+aptpod-core = { workspace = true, features = ["testutil"] }
+
 [package.metadata.deb]
 name = "aptpod"
 maintainer = "shinys000114 <shinys000114@users.noreply.github.com>"
