@@ -40,7 +40,8 @@ tower-http = { version = "0.7", features = ["limit", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 argon2 = "0.6"
-jiff = "1"
+# System zoneinfo first; the bundled copy covers hosts without tzdata.
+jiff = { version = "1", features = ["tzdb-bundle-always"] }
 getrandom = "0.4"
 futures-util = "0.3"
 tokio-stream = { version = "0.1", features = ["sync"] }

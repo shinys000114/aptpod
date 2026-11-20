@@ -72,10 +72,26 @@ pub struct TestKey {
 }
 
 impl TestKey {
+    /// A fresh key. Key generation is serialized within the process and
+    /// retried: gpg-agents started side by side by parallel tests
+    /// occasionally fail with "Corrupted protection".
     pub fn new() -> Option<Self> {
         if !have("gpg") {
             return None;
         }
+        static GEN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _one = GEN.lock().unwrap_or_else(|e| e.into_inner());
+        let mut last = String::new();
+        for _ in 0..3 {
+            match Self::generate() {
+                Ok(k) => return Some(k),
+                Err(e) => last = e,
+            }
+        }
+        panic!("gpg key generation failed 3 times: {last}");
+    }
+
+    fn generate() -> Result<Self, String> {
         // short path: gpg-agent socket names are length limited
         let home = tempfile::Builder::new()
             .prefix("apk")
@@ -88,7 +104,14 @@ impl TestKey {
         .unwrap();
         let passphrase_file = home.path().join("pass");
         std::fs::write(&passphrase_file, "s3cret-test\n").unwrap();
-        let gpg = |args: &[&str]| {
+        let kill_agent = || {
+            let _ = Command::new("gpgconf")
+                .arg("--homedir")
+                .arg(home.path())
+                .args(["--kill", "all"])
+                .status();
+        };
+        let gpg = |args: &[&str]| -> Result<Vec<u8>, String> {
             let out = Command::new("gpg")
                 .arg("--homedir")
                 .arg(home.path())
@@ -96,41 +119,51 @@ impl TestKey {
                 .args(args)
                 .output()
                 .unwrap();
-            assert!(
-                out.status.success(),
-                "gpg {args:?}: {}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-            out.stdout
+            if !out.status.success() {
+                return Err(format!(
+                    "gpg {args:?}: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                ));
+            }
+            Ok(out.stdout)
         };
         let pass = passphrase_file.to_str().unwrap();
-        gpg(&[
-            "--pinentry-mode",
-            "loopback",
-            "--passphrase-file",
-            pass,
-            "--quick-gen-key",
-            "aptpod test <test@example.invalid>",
-            "ed25519",
-            "sign",
-            "never",
-        ]);
-        let list = String::from_utf8(gpg(&["--with-colons", "--list-secret-keys"])).unwrap();
-        let fpr = list
-            .lines()
-            .find(|l| l.starts_with("fpr:"))
-            .unwrap()
-            .split(':')
-            .nth(9)
-            .unwrap()
-            .to_string();
-        let public = gpg(&["--export", &fpr]);
-        Some(Self {
-            home,
-            fpr,
-            passphrase_file,
-            public,
-        })
+        let made = (|| {
+            gpg(&[
+                "--pinentry-mode",
+                "loopback",
+                "--passphrase-file",
+                pass,
+                "--quick-gen-key",
+                "aptpod test <test@example.invalid>",
+                "ed25519",
+                "sign",
+                "never",
+            ])?;
+            let list = String::from_utf8(gpg(&["--with-colons", "--list-secret-keys"])?).unwrap();
+            let fpr = list
+                .lines()
+                .find(|l| l.starts_with("fpr:"))
+                .ok_or("no fingerprint")?
+                .split(':')
+                .nth(9)
+                .unwrap()
+                .to_string();
+            let public = gpg(&["--export", &fpr])?;
+            Ok::<_, String>((fpr, public))
+        })();
+        match made {
+            Ok((fpr, public)) => Ok(Self {
+                home,
+                fpr,
+                passphrase_file,
+                public,
+            }),
+            Err(e) => {
+                kill_agent();
+                Err(e)
+            }
+        }
     }
 
     pub fn signer(&self) -> crate::sign::GpgSigner {

@@ -25,6 +25,8 @@ fi
 grep -q 'sudo -u aptpod' /tmp/err || fail "no hint: $(cat /tmp/err)"
 
 sed -i 's|^publish_roots = \[\]|publish_roots = ["/srv/apt"]|' /etc/aptpod/server.toml
+# Schedules in a named time zone must work on a bare image too.
+echo 'timezone = "Asia/Seoul"' >>/etc/aptpod/server.toml
 install -d -o aptpod -g aptpod /srv/apt
 echo 'admin-password' | runuser -u aptpod -- aptpod-server user add admin --role admin --password-stdin
 # setpriv execs the server itself (runuser would stay as its parent), so

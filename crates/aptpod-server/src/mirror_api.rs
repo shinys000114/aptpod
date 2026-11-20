@@ -69,6 +69,12 @@ async fn checked(
     previous: Option<&MirrorDef>,
 ) -> Result<(MirrorDef, Option<String>), ApiError> {
     check_alias(name).map_err(|e| ApiError::invalid(e.to_string()))?;
+    if name == "index" {
+        // status_dir/index.json lists all mirrors.
+        return Err(ApiError::invalid(
+            "\"index\" is reserved; pick another name",
+        ));
+    }
     def.check(&st.cfg)
         .map_err(|e| ApiError::invalid(format!("mirror {name:?}: {e}")))?;
     refuse_mirror_overlap(st, &def.path, Some(name))?;

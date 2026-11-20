@@ -144,7 +144,8 @@ fn write_all(st: &AppState, dir: &Path) -> Result<(), String> {
             "started": local(st, s.started).map(|z| iso(&z)),
             "finished": local(st, s.finished).map(|z| iso(&z)),
             "last_success": local(st, s.last_ok).map(|z| iso(&z)),
-            "summary": s.summary,
+            // Only a success summary: failure text may name local paths.
+            "summary": if state == "synced" { s.summary.clone() } else { None },
             "schedule": def.schedule,
             "next_run": next_run(st, def),
         });
