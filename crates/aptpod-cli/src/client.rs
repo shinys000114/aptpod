@@ -35,13 +35,15 @@ impl CliError {
         }
     }
 
-    /// 2 usage, 3 stale (preview again), 4 conflict, 5 blocked (needs
+    /// 2 usage, 3 stale (preview again), 4 conflict or managed by the
+    /// config file, 5 blocked (needs
     /// force), 6 unsynced (committed but a tree is behind), 7 auth.
     pub fn exit_code(&self) -> u8 {
         match self.kind.as_str() {
             "usage" => 2,
             "stale" => 3,
-            "conflict" => 4,
+            // managed: declared in the server's config file
+            "conflict" | "managed" => 4,
             "blocked" => 5,
             "unsynced" => 6,
             "unauthorized" | "forbidden" => 7,

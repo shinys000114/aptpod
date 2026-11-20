@@ -42,6 +42,7 @@ repository changed since the preview.
 | search everywhere | `aptpod find 'linux-image-*' --newest` |
 | change a layout | `aptpod publish edit ppa` (TOML in `$EDITOR`), `aptpod publish set ppa layout.toml` |
 | all layouts as one file | `aptpod config export > repos.toml`, `aptpod config import repos.toml` |
+| manage some of it in a file (git) | `config_file = "/etc/aptpod/aptpod.toml"` in server.toml; `aptpod-server config-check`, `aptpod config plan`, `systemctl reload aptpod-server`, `aptpod config status` |
 | CI token | `aptpod token create jenkins`, then `APTPOD_TOKEN=... aptpod add ...` |
 | users (admin) | `aptpod user add bob --role publisher`, `aptpod user ls` |
 | watch jobs | `aptpod jobs --follow`, `aptpod log <job> -f` |
@@ -50,7 +51,7 @@ repository changed since the preview.
 
 Roles: `reader` (read only), `publisher` (packages, snapshots, rollback),
 `admin` (publishes, users, config import, gc, repair). Exit codes: 2 usage,
-3 stale preview, 4 conflict, 5 needs `--force`, 6 saved but a tree is
+3 stale preview, 4 conflict (or managed by the config file), 5 needs `--force`, 6 saved but a tree is
 behind (`aptpod repair`), 7 authentication or permission.
 
 The server only writes `pool/` and `dists/<dist>` under each publish path;

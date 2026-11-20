@@ -47,6 +47,19 @@ embedded in the binary).
 | License | GPL-3.0-only; derived parts credited to aptly (MIT) in NOTICE |
 | Builds | static musl binaries x86_64 + aarch64, two .deb packages (cargo-deb), GitHub Actions. Later: a `debian/` directory so `debuild` / `dpkg-buildpackage` build source and binary packages directly (debhelper, crates vendored with `cargo vendor` for offline builds) |
 
+Configuration source (decided after P4e): the database is the source of
+truth, edited through the CLI, API and web UI; `aptpod config export/import`
+moves it. Optionally, server.toml's `config_file` names a file in the
+export format (plus top-level `adopt` / `force`) that the server applies at
+start and on SIGHUP (`systemctl reload`) with the import rules: changes
+are planned like any other, destructive ones refused unless the file says
+`force`, items missing from the file left alone. What the file declares
+is *managed*: the API refuses to edit it (`managed`, CLI exit 4), `config
+import` skips it with a warning, data operations (packages, snapshots,
+syncs) still work. A file that cannot be read keeps the previous state
+and marks. `aptpod-server config-check` checks a file offline, `aptpod
+config plan` previews a reload, `aptpod config status` shows the last one.
+
 ## Carry-over from aptrix
 
 aptrix wrapped aptly, so part of it only existed to drive aptly's model.

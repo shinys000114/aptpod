@@ -32,6 +32,11 @@ pub struct Config {
     /// `<name>.svg`, `index.json`), e.g. served next to the mirrors.
     #[serde(default)]
     pub status_dir: Option<PathBuf>,
+    /// Publishes and mirrors declared in a file (the `aptpod config export`
+    /// format), applied at start and on SIGHUP; what it declares cannot be
+    /// edited through the API.
+    #[serde(default)]
+    pub config_file: Option<PathBuf>,
     /// Largest accepted upload, in bytes.
     #[serde(default = "default_upload_limit")]
     pub upload_limit: u64,

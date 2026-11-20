@@ -121,6 +121,8 @@ struct MirrorView {
     running: Option<i64>,
     /// Next scheduled sync (server time zone).
     next_run: Option<String>,
+    /// Declared in the config file (edit it there).
+    managed: bool,
 }
 
 fn view(st: &AppState, name: String, def: MirrorDef) -> Result<MirrorView, ApiError> {
@@ -128,6 +130,7 @@ fn view(st: &AppState, name: String, def: MirrorDef) -> Result<MirrorView, ApiEr
         status: st.auth.mirror_status(&name)?,
         running: st.mirror_runner.running(&name),
         next_run: crate::schedule::next_run(st, &def),
+        managed: st.config_file.is_mirror(&name),
         name,
         def,
     })
@@ -159,6 +162,7 @@ struct CreateReq {
 
 async fn create(State(st): St, caller: Caller, Json(req): Json<CreateReq>) -> Res<Value> {
     caller.need(Role::Admin)?;
+    crate::configfile::refuse(&st, "mirror", &req.name)?;
     if st.auth.mirror(&req.name)?.is_some() {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
@@ -188,6 +192,7 @@ async fn update(
     Json(req): Json<UpdateReq>,
 ) -> Res<Value> {
     caller.need(Role::Admin)?;
+    crate::configfile::refuse(&st, "mirror", &name)?;
     let old = st.auth.mirror(&name)?.ok_or_else(|| not_found(&name))?;
     if let Some(job) = st.mirror_runner.running(&name) {
         return Err(busy(&name, job));
@@ -212,6 +217,7 @@ fn busy(name: &str, job: i64) -> ApiError {
 /// Forgets a mirror; its tree is left on disk.
 async fn remove(State(st): St, caller: Caller, Path(name): Path<String>) -> Res<Value> {
     caller.need(Role::Admin)?;
+    crate::configfile::refuse(&st, "mirror", &name)?;
     let def = st.auth.mirror(&name)?.ok_or_else(|| not_found(&name))?;
     if let Some(job) = st.mirror_runner.running(&name) {
         return Err(busy(&name, job));

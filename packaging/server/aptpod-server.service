@@ -8,6 +8,8 @@ After=network-online.target
 User=aptpod
 Group=aptpod
 ExecStart=/usr/bin/aptpod-server --config /etc/aptpod/server.toml
+# Re-reads config_file (publishes and mirrors declared in a file).
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=10s
 StateDirectory=aptpod

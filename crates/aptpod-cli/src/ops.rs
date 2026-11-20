@@ -124,6 +124,12 @@ pub enum OpsCmd {
 
 #[derive(Subcommand)]
 pub enum ConfigCmd {
+    /// The server's config file: last application, managed items.
+    Status,
+    /// What applying the config file now would change (admin).
+    Plan,
+    /// Applies the config file now, like `systemctl reload` (admin).
+    Reload,
     /// Prints every publish layout as TOML (`[publishes.<alias>]`).
     Export,
     /// Creates and updates publishes from a TOML file, `-` for stdin
@@ -378,6 +384,79 @@ pub fn run(c: &Client, cmd: OpsCmd, json: bool) -> Result<(), CliError> {
                     &["alias", "dist", "component", "name", "version", "arch"],
                     &rows,
                 );
+            }
+            Ok(())
+        }
+        OpsCmd::Config(ConfigCmd::Status) => {
+            let s: Value = c.get("/api/v1/config/file", &[])?;
+            if json {
+                print_json(&s);
+                return Ok(());
+            }
+            let Some(path) = s["path"].as_str() else {
+                println!("no config_file is set in server.toml");
+                return Ok(());
+            };
+            println!("config file: {path}");
+            match s["ok"].as_bool() {
+                None => println!("not applied yet"),
+                Some(ok) => println!(
+                    "last applied {}: {}",
+                    fmt_time(s["applied"].as_i64()),
+                    if ok {
+                        "ok".to_string()
+                    } else {
+                        format!("FAILED: {}", s["error"].as_str().unwrap_or(""))
+                    }
+                ),
+            }
+            for (what, key) in [("publishes", "publishes"), ("mirrors", "mirrors")] {
+                let names: Vec<&str> = s[key]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect();
+                println!(
+                    "managed {what}: {}",
+                    if names.is_empty() {
+                        "-".to_string()
+                    } else {
+                        names.join(", ")
+                    }
+                );
+            }
+            for l in s["changes"].as_array().into_iter().flatten() {
+                println!("  changed: {}", l.as_str().unwrap_or(""));
+            }
+            for w in s["warnings"].as_array().into_iter().flatten() {
+                println!("  warning: {}", w.as_str().unwrap_or(""));
+            }
+            Ok(())
+        }
+        OpsCmd::Config(ConfigCmd::Plan) => {
+            let out: Value = c.post("/api/v1/config/file/plan", &json!({}))?;
+            if json {
+                print_json(&out);
+            } else {
+                crate::print_plan(&out["plan"]);
+                if out["plan"]["empty"].as_bool() == Some(true) {
+                    println!("the server is up to date with the config file");
+                }
+            }
+            Ok(())
+        }
+        OpsCmd::Config(ConfigCmd::Reload) => {
+            let out: Value = c.post("/api/v1/config/file/apply", &json!({}))?;
+            if json {
+                print_json(&out);
+            } else {
+                crate::print_plan(&out["plan"]);
+                if out["plan"]["empty"].as_bool() == Some(true) {
+                    println!("nothing to do");
+                } else if let Some(a) = out.get("applied") {
+                    crate::print_applied(a);
+                }
             }
             Ok(())
         }

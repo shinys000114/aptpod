@@ -414,10 +414,15 @@ fn publish(c: Client, cmd: PublishCmd, json: bool) -> Result<(), CliError> {
                 for p in &list {
                     let l = &p["layout"];
                     println!(
-                        "{}\t{}\t{}",
+                        "{}\t{}\t{}{}",
                         p["alias"].as_str().unwrap_or(""),
                         l["path"].as_str().unwrap_or(""),
-                        join(&l["dists"])
+                        join(&l["dists"]),
+                        if p["managed"].as_bool() == Some(true) {
+                            "\t(config file)"
+                        } else {
+                            ""
+                        }
                     );
                 }
             }

@@ -143,7 +143,7 @@ fn read_input(file: &PathBuf) -> Result<String, CliError> {
 fn def_toml(view: &Value) -> Result<String, CliError> {
     let mut def = view.clone();
     if let Some(o) = def.as_object_mut() {
-        for k in ["name", "status", "running"] {
+        for k in ["name", "status", "running", "next_run", "managed"] {
             o.remove(k);
         }
         o.retain(|_, v| !v.is_null());
@@ -183,8 +183,13 @@ pub fn run(c: &Client, cmd: MirrorCmd, json: bool) -> Result<(), CliError> {
                     .as_str()
                     .map(|n| format!("next {n}"))
                     .unwrap_or_else(|| "not scheduled".into());
+                let managed = if m["managed"].as_bool() == Some(true) {
+                    "\t(config file)"
+                } else {
+                    ""
+                };
                 println!(
-                    "{}\t{}\t{}\t{}\t{}\t{next}",
+                    "{}\t{}\t{}\t{}\t{}\t{next}{managed}",
                     m["name"].as_str().unwrap_or(""),
                     m["path"].as_str().unwrap_or(""),
                     state,

@@ -45,6 +45,9 @@ pub fn routes() -> Router<Arc<AppState>> {
             delete(snapshot_drop),
         )
         .route("/api/v1/config", get(config_export).post(config_import))
+        .route("/api/v1/config/file", get(file_status))
+        .route("/api/v1/config/file/plan", post(file_plan))
+        .route("/api/v1/config/file/apply", post(file_apply))
         .route("/api/v1/gc", post(gc))
         .route("/api/v1/repair", post(repair))
 }
@@ -313,6 +316,7 @@ async fn set_layout(
     Json(req): Json<LayoutReq>,
 ) -> Res<Outcome> {
     caller.need(Role::Admin)?;
+    crate::configfile::refuse(&st, "publish", &alias)?;
     st.cfg
         .allows_publish_path(&req.layout.path)
         .map_err(ApiError::invalid)?;
@@ -349,6 +353,7 @@ async fn delete_publish(
     Json(req): Json<DeleteReq>,
 ) -> Res<Outcome> {
     caller.need(Role::Admin)?;
+    crate::configfile::refuse(&st, "publish", &alias)?;
     let resource = format!("publish:{alias}");
     plan_job(
         &st,
@@ -499,14 +504,14 @@ async fn snapshot_prune(
 
 // ---- configuration -------------------------------------------------------
 
-/// Every publish layout; the TOML file of `aptpod config` carries this.
-#[derive(Serialize, Deserialize)]
+/// Every publish layout and mirror; the TOML of `aptpod config`.
+#[derive(Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-struct ConfigView {
+pub(crate) struct ConfigView {
     #[serde(default)]
-    publishes: BTreeMap<String, Layout>,
+    pub(crate) publishes: BTreeMap<String, Layout>,
     #[serde(default)]
-    mirrors: BTreeMap<String, crate::mirrors::MirrorDef>,
+    pub(crate) mirrors: BTreeMap<String, crate::mirrors::MirrorDef>,
 }
 
 async fn config_export(State(st): St, caller: Caller) -> Res<ConfigView> {
@@ -530,13 +535,79 @@ struct ImportReq {
     expect: Bases,
 }
 
-/// Creates the publishes of the file that do not exist and updates the
-/// layouts of those that do, as one plan; mirrors are created or updated
-/// with it. Publishes and mirrors missing from the file are left alone
-/// (reported as warnings).
+/// The config file: path, last application, managed items.
+async fn file_status(State(st): St, caller: Caller) -> Res<crate::configfile::Status> {
+    caller.need(Role::Reader)?;
+    let mut s = st.config_file.status();
+    s.path = st.cfg.config_file.clone();
+    Ok(Json(s))
+}
+
+/// What applying the config file now would change (nothing is applied).
+async fn file_plan(State(st): St, caller: Caller) -> Res<Outcome> {
+    caller.need(Role::Admin)?;
+    Ok(Json(crate::configfile::run(&st, false).await?))
+}
+
+/// Applies the config file now (as SIGHUP does).
+async fn file_apply(State(st): St, caller: Caller) -> Res<Outcome> {
+    caller.need(Role::Admin)?;
+    Ok(Json(crate::configfile::run(&st, true).await?))
+}
+
+/// `aptpod config import`: items the config file manages are skipped (with
+/// a warning), so an exported file can be imported back as it is.
 async fn config_import(State(st): St, caller: Caller, Json(req): Json<ImportReq>) -> Res<Outcome> {
     caller.need(Role::Admin)?;
-    let pubs = req.config.publishes;
+    let mut config = req.config;
+    let mut skipped = Vec::new();
+    {
+        let managed = st.config_file.managed();
+        config.publishes.retain(|a, _| {
+            let m = managed.publishes.contains(a);
+            if m {
+                skipped.push(format!(
+                    "publish {a:?} is managed by the config file; skipped"
+                ));
+            }
+            !m
+        });
+        config.mirrors.retain(|n, _| {
+            let m = managed.mirrors.contains(n);
+            if m {
+                skipped.push(format!(
+                    "mirror {n:?} is managed by the config file; skipped"
+                ));
+            }
+            !m
+        });
+    }
+    let mut out = import(
+        &st,
+        caller.user.name.clone(),
+        config,
+        req.force,
+        req.adopt,
+        commit(req.apply, req.expect),
+    )
+    .await?;
+    out.plan.warnings.extend(skipped);
+    Ok(Json(out))
+}
+
+/// Creates the publishes of `config` that do not exist and updates the
+/// layouts of those that do, as one plan; mirrors are created or updated
+/// with it. Publishes and mirrors missing from `config` are left alone
+/// (reported as warnings).
+pub(crate) async fn import(
+    st: &Arc<AppState>,
+    user: String,
+    config: ConfigView,
+    force: bool,
+    adopt: bool,
+    commit: Commit,
+) -> Result<Outcome, ApiError> {
+    let pubs = config.publishes;
     // Publish paths against the mirrors as they will be after the import.
     let mut mirror_paths: BTreeMap<String, std::path::PathBuf> = st
         .auth
@@ -544,7 +615,7 @@ async fn config_import(State(st): St, caller: Caller, Json(req): Json<ImportReq>
         .into_iter()
         .map(|(n, d)| (n, d.path))
         .collect();
-    for (n, d) in &req.config.mirrors {
+    for (n, d) in &config.mirrors {
         mirror_paths.insert(n.clone(), d.path.clone());
     }
     for (a, l) in &pubs {
@@ -558,8 +629,8 @@ async fn config_import(State(st): St, caller: Caller, Json(req): Json<ImportReq>
         }
     }
     let (mirror_changes, mirror_lines, mirror_warnings) =
-        crate::mirror_api::import_changes(&st, req.config.mirrors, req.adopt).await?;
-    let apply = req.apply;
+        crate::mirror_api::import_changes(st, config.mirrors, adopt).await?;
+    let apply = commit.apply;
     let list: Vec<(&String, &Layout)> = pubs.iter().collect();
     for (i, (a, la)) in list.iter().enumerate() {
         st.cfg
@@ -581,35 +652,26 @@ async fn config_import(State(st): St, caller: Caller, Json(req): Json<ImportReq>
             .collect::<Vec<_>>()
             .join(",")
     };
-    let (force, adopt) = (req.force, req.adopt);
-    let out = plan_job(
-        &st,
-        &caller,
-        "import",
-        resource,
-        commit(req.apply, req.expect),
-        vec![],
-        move |r| {
-            let existing: BTreeSet<String> = r.publishes()?.into_iter().map(|(a, _)| a).collect();
-            let mut plan = Plan::default();
-            for a in existing.iter().filter(|a| !pubs.contains_key(*a)) {
-                plan.warnings
-                    .push(format!("publish {a:?} is not in the file; left unchanged"));
-            }
-            for (alias, layout) in pubs {
-                let p = if existing.contains(&alias) {
-                    r.plan_layout(&alias, layout, force, adopt)?
-                } else {
-                    r.plan_create(&alias, layout, adopt)?
-                };
-                // An unchanged publish must not get an empty revision.
-                plan.parts
-                    .extend(p.parts.into_iter().filter(|part| !part.changes.is_empty()));
-                plan.warnings.extend(p.warnings);
-            }
-            Ok(plan)
-        },
-    )
+    let out = crate::api::plan_job_as(st, user, "import", resource, commit, vec![], move |r| {
+        let existing: BTreeSet<String> = r.publishes()?.into_iter().map(|(a, _)| a).collect();
+        let mut plan = Plan::default();
+        for a in existing.iter().filter(|a| !pubs.contains_key(*a)) {
+            plan.warnings
+                .push(format!("publish {a:?} is not in the file; left unchanged"));
+        }
+        for (alias, layout) in pubs {
+            let p = if existing.contains(&alias) {
+                r.plan_layout(&alias, layout, force, adopt)?
+            } else {
+                r.plan_create(&alias, layout, adopt)?
+            };
+            // An unchanged publish must not get an empty revision.
+            plan.parts
+                .extend(p.parts.into_iter().filter(|part| !part.changes.is_empty()));
+            plan.warnings.extend(p.warnings);
+        }
+        Ok(plan)
+    })
     .await?;
     let mut out = out.0;
     out.plan.lines.extend(mirror_lines);
@@ -619,9 +681,9 @@ async fn config_import(State(st): St, caller: Caller, Json(req): Json<ImportReq>
         for (name, def) in &mirror_changes {
             st.auth.mirror_put(name, def)?;
         }
-        crate::schedule::write_status(&st);
+        crate::schedule::write_status(st);
     }
-    Ok(Json(out))
+    Ok(out)
 }
 
 // ---- search, maintenance -------------------------------------------------

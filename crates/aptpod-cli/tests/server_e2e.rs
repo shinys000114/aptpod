@@ -1939,3 +1939,149 @@ fn schedules_status_and_checks() {
     assert!(!status.join("wrong.json").exists() && !status.join("wrong.svg").exists());
     assert!(srv.stop().success());
 }
+
+/// config_file: checked offline, applied at start and on SIGHUP, what it
+/// declares is read-only through the API, data operations still work,
+/// destructive changes need `force` in the file, a broken file keeps the
+/// previous state.
+#[test]
+fn config_file_workflow() {
+    let Some((dir, bin, cfg)) = prepare_extra("") else {
+        return;
+    };
+    let d = dir.path();
+    let (trees, mroot, file) = (d.join("trees"), d.join("mirrors"), d.join("aptpod.toml"));
+    let base = std::fs::read_to_string(&cfg).unwrap();
+    std::fs::write(
+        &cfg,
+        format!(
+            "{base}mirror_roots = [{:?}]\nconfig_file = {:?}\n",
+            mroot.display().to_string(),
+            file.display().to_string()
+        ),
+    )
+    .unwrap();
+    let fp = trees.join("fp").display().to_string();
+    let fm = mroot.join("fm").display().to_string();
+    let write_file = |dists: &str, extra: &str| {
+        std::fs::write(
+            &file,
+            format!(
+                "{extra}[publishes.fp]\npath = {fp:?}\ndists = [{dists}]\ncomponents = [\"main\"]\narchitectures = [\"amd64\"]\nsign = false\n\n\
+                 [mirrors.fm]\nurl = \"http://127.0.0.1:9/\"\npath = {fm:?}\ndists = [\"stable\"]\ninsecure = true\n"
+            ),
+        )
+        .unwrap()
+    };
+    let check = |code: bool| {
+        let o = Command::new(&bin)
+            .arg("-c")
+            .arg(&cfg)
+            .arg("config-check")
+            .output()
+            .unwrap();
+        assert_eq!(o.status.success(), code, "{}", text(&o));
+        text(&o)
+    };
+    // Checked without a server.
+    std::fs::write(&file, "[publishes.bad]\npath = \"/elsewhere/x\"\ndists = [\"a\"]\ncomponents = [\"main\"]\narchitectures = [\"amd64\"]\n").unwrap();
+    assert!(check(false).contains("not under a configured publish root"));
+    write_file("\"jammy\", \"noble\"", "");
+    assert!(check(true).contains("ok (1 publish(es), 1 mirror(s))"));
+
+    let srv = Server::start(&bin, &cfg);
+    let admin = Cli {
+        creds: d.join("admin.toml"),
+        url: srv.url.clone(),
+    };
+    login(&admin, "admin");
+    assert!(
+        admin.ok(&["publish", "ls"]).contains("fp\t")
+            && admin.ok(&["publish", "ls"]).contains("(config file)")
+    );
+    assert!(admin.ok(&["mirror", "ls"]).contains("(config file)"));
+    let status = admin.ok(&["config", "status"]);
+    assert!(
+        status.contains(": ok")
+            && status.contains("managed publishes: fp")
+            && status.contains("managed mirrors: fm"),
+        "{status}"
+    );
+
+    // Read-only through the API; packages still go in.
+    let err = admin.fails(&["publish", "delete", "fp", "--force", "-y"], 4);
+    assert!(
+        err.contains("managed by") && err.contains("aptpod.toml"),
+        "{err}"
+    );
+    assert!(
+        admin
+            .fails(&["mirror", "delete", "fm"], 4)
+            .contains("managed by")
+    );
+    let debs = d.join("debs");
+    std::fs::create_dir_all(&debs).unwrap();
+    let deb = build_deb(&debs, "filepkg", "1.0~jammy")
+        .display()
+        .to_string();
+    admin.ok(&["add", "fp", "main", &deb, "-y"]);
+    // An export imports back as it is: managed items are skipped.
+    let exported = admin.ok(&["config", "export"]);
+    let out = admin.run(&["config", "import", "-", "-y"], &exported);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("managed by the config file; skipped"),
+        "{}",
+        text(&out)
+    );
+
+    let reload = |srv: &Server| {
+        let before = admin.ok(&["config", "status", "--json"]);
+        Command::new("kill")
+            .args(["-HUP", &srv.child.id().to_string()])
+            .status()
+            .unwrap();
+        for _ in 0..100 {
+            if admin.ok(&["config", "status", "--json"]) != before {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        panic!("reload not applied");
+    };
+    // Adding a dist: previewed, then applied on SIGHUP.
+    write_file("\"jammy\", \"noble\", \"resolute\"", "");
+    let plan = admin.ok(&["config", "plan"]);
+    assert!(plan.contains("resolute"), "{plan}");
+    reload(&srv);
+    assert!(trees.join("fp/dists/resolute").is_dir());
+    // Dropping jammy (it holds a package) is refused until the file says force.
+    write_file("\"noble\", \"resolute\"", "");
+    reload(&srv);
+    let status = admin.ok(&["config", "status"]);
+    assert!(
+        status.contains("FAILED") && status.contains("force"),
+        "{status}"
+    );
+    assert!(trees.join("fp/dists/jammy").is_dir());
+    write_file("\"noble\", \"resolute\"", "force = true\n");
+    reload(&srv);
+    assert!(admin.ok(&["config", "status"]).contains(": ok"));
+    assert!(!trees.join("fp/dists/jammy").exists());
+
+    // A broken file keeps what was there, managed marks included.
+    std::fs::write(&file, "[publishes.fp\n").unwrap();
+    reload(&srv);
+    assert!(admin.ok(&["config", "status"]).contains("FAILED"));
+    admin.fails(&["publish", "delete", "fp", "--force", "-y"], 4);
+    // Leaving the file makes an item editable again (it is not deleted).
+    std::fs::write(
+        &file,
+        format!("[publishes.fp]\npath = {fp:?}\ndists = [\"noble\", \"resolute\"]\ncomponents = [\"main\"]\narchitectures = [\"amd64\"]\nsign = false\n"),
+    )
+    .unwrap();
+    reload(&srv);
+    assert!(admin.ok(&["mirror", "ls"]).contains("fm\t"), "kept");
+    admin.ok(&["mirror", "delete", "fm"]);
+    assert!(srv.stop().success());
+}

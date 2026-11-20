@@ -5,6 +5,7 @@
 mod api;
 mod authdb;
 mod config;
+mod configfile;
 mod cron;
 mod events;
 mod mirror_api;
@@ -44,6 +45,12 @@ enum Command {
     /// Manages users; works while the server runs.
     #[command(subcommand)]
     User(UserCmd),
+    /// Checks server.toml and the config file (or FILE) without a server;
+    /// run it before `systemctl reload aptpod-server`.
+    ConfigCheck {
+        /// Default: config_file from server.toml.
+        file: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -76,6 +83,7 @@ fn main() -> ExitCode {
     let res = Config::load(&cli.config).and_then(|cfg| match cli.command {
         None | Some(Command::Serve) => serve(cfg),
         Some(Command::User(cmd)) => user(&cfg, cmd),
+        Some(Command::ConfigCheck { file }) => config_check(&cfg, file),
     });
     match res {
         Ok(()) => ExitCode::SUCCESS,
@@ -171,6 +179,60 @@ fn user(cfg: &Config, cmd: UserCmd) -> Result<(), String> {
     Ok(())
 }
 
+/// Static checks of a config file: syntax, layouts, mirror definitions,
+/// path rules and overlaps among its items (not against the database).
+fn config_check(cfg: &Config, file: Option<PathBuf>) -> Result<(), String> {
+    let Some(path) = file.or_else(|| cfg.config_file.clone()) else {
+        println!("server.toml is valid; no config_file is set");
+        return Ok(());
+    };
+    let f = configfile::FileConfig::load(&path)?;
+    let mut errors = Vec::new();
+    for (alias, l) in &f.publishes {
+        if let Err(e) = aptpod_repo::layout::check_alias(alias) {
+            errors.push(format!("publish {alias:?}: {e}"));
+        }
+        if let Err(e) = l.validate() {
+            errors.push(format!("publish {alias:?}: {e}"));
+        }
+        if let Err(e) = cfg.allows_publish_path(&l.path) {
+            errors.push(format!("publish {alias:?}: {e}"));
+        }
+    }
+    for (name, d) in &f.mirrors {
+        if let Err(e) = d.check(cfg) {
+            errors.push(format!("mirror {name:?}: {e}"));
+        }
+    }
+    let paths: Vec<(String, &Path)> = f
+        .publishes
+        .iter()
+        .map(|(a, l)| (format!("publish {a:?}"), l.path.as_path()))
+        .chain(
+            f.mirrors
+                .iter()
+                .map(|(n, d)| (format!("mirror {n:?}"), d.path.as_path())),
+        )
+        .collect();
+    for (i, (a, pa)) in paths.iter().enumerate() {
+        for (b, pb) in &paths[i + 1..] {
+            if aptpod_repo::layout::paths_overlap(pa, pb) {
+                errors.push(format!("{a} and {b} have overlapping paths"));
+            }
+        }
+    }
+    if !errors.is_empty() {
+        return Err(format!("{}:\n  {}", path.display(), errors.join("\n  ")));
+    }
+    println!(
+        "{}: ok ({} publish(es), {} mirror(s)); `aptpod config plan` shows what a reload would change",
+        path.display(),
+        f.publishes.len(),
+        f.mirrors.len()
+    );
+    Ok(())
+}
+
 /// Removes uploads nobody applied within [`aptpod_repo::history::GC_GRACE`].
 fn sweep_uploads(dir: &Path) {
     let max_age = Duration::from_secs(aptpod_repo::history::GC_GRACE as u64);
@@ -242,6 +304,7 @@ fn serve(cfg: Config) -> Result<(), String> {
         events: tokio::sync::broadcast::channel(256).0,
         stopping: tokio::sync::watch::channel(false).0,
         mirror_runner: runner::Runner::default(),
+        config_file: configfile::FileState::default(),
     });
     runner::Runner::start(&state, cfg.mirror_workers);
 
@@ -268,6 +331,23 @@ fn serve(cfg: Config) -> Result<(), String> {
                 let _ = tokio::task::spawn_blocking(move || sweep_uploads(&dir)).await;
             }
         });
+        if cfg.config_file.is_some() {
+            apply_config_file(&state, "startup").await;
+        }
+        let st = state.clone();
+        tokio::spawn(async move {
+            use tokio::signal::unix::{SignalKind, signal};
+            let Ok(mut hup) = signal(SignalKind::hangup()) else {
+                return;
+            };
+            while hup.recv().await.is_some() {
+                if st.cfg.config_file.is_none() {
+                    tracing::warn!("SIGHUP: no config_file is set; nothing to reload");
+                    continue;
+                }
+                apply_config_file(&st, "reload").await;
+            }
+        });
         axum::serve(listener, api::router(state.clone()))
             .with_graceful_shutdown(shutdown_signal(state.clone()))
             .await
@@ -280,6 +360,24 @@ fn serve(cfg: Config) -> Result<(), String> {
     tracing::info!("stopped");
     drop(lock);
     res
+}
+
+/// Applies the config file and logs what happened.
+async fn apply_config_file(st: &Arc<api::AppState>, why: &str) {
+    match configfile::run(st, true).await {
+        Ok(out) => {
+            if out.plan.empty {
+                tracing::info!("config file ({why}): up to date");
+            }
+            for l in &out.plan.lines {
+                tracing::info!("config file ({why}): {l}");
+            }
+            for w in &out.plan.warnings {
+                tracing::warn!("config file ({why}): {w}");
+            }
+        }
+        Err(e) => tracing::error!("config file ({why}) not applied: {}", e.message()),
+    }
 }
 
 async fn shutdown_signal(state: Arc<api::AppState>) {

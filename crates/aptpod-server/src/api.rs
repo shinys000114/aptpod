@@ -38,6 +38,7 @@ pub struct AppState {
     /// Set when shutting down; ends event streams so connections close.
     pub stopping: tokio::sync::watch::Sender<bool>,
     pub mirror_runner: crate::runner::Runner,
+    pub config_file: crate::configfile::FileState,
 }
 
 pub(crate) type St = State<Arc<AppState>>;
@@ -85,6 +86,10 @@ impl ApiError {
             message: message.into(),
         }
     }
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
+
     pub(crate) fn invalid(message: impl Into<String>) -> Self {
         Self::new(StatusCode::BAD_REQUEST, "invalid", message)
     }
@@ -348,6 +353,8 @@ where
 struct PublishView {
     alias: String,
     layout: Layout,
+    /// Declared in the config file (edit it there).
+    managed: bool,
 }
 
 async fn publishes(State(st): St, caller: Caller) -> Res<Vec<PublishView>> {
@@ -355,7 +362,11 @@ async fn publishes(State(st): St, caller: Caller) -> Res<Vec<PublishView>> {
     let list = read(&st, |r| r.publishes()).await?;
     Ok(Json(
         list.into_iter()
-            .map(|(alias, layout)| PublishView { alias, layout })
+            .map(|(alias, layout)| PublishView {
+                managed: st.config_file.is_publish(&alias),
+                alias,
+                layout,
+            })
             .collect(),
     ))
 }
@@ -366,8 +377,11 @@ async fn publish(
     Path(alias): Path<String>,
 ) -> Res<serde_json::Value> {
     caller.need(Role::Reader)?;
+    let alias2 = alias.clone();
     let (layout, cells) = read(&st, move |r| Ok((r.layout(&alias)?, r.status(&alias)?))).await?;
-    Ok(Json(json!({ "layout": layout, "cells": cells })))
+    Ok(Json(
+        json!({ "layout": layout, "cells": cells, "managed": st.config_file.is_publish(&alias2) }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -502,8 +516,32 @@ pub(crate) async fn plan_job<F>(
 where
     F: FnOnce(&mut Repo) -> Result<Plan, RepoError> + Send + 'static,
 {
+    plan_job_as(
+        st,
+        caller.user.name.clone(),
+        kind,
+        resource,
+        commit,
+        uploads,
+        make,
+    )
+    .await
+}
+
+/// [`plan_job`] on behalf of `user` (e.g. the config file).
+pub(crate) async fn plan_job_as<F>(
+    st: &Arc<AppState>,
+    user: String,
+    kind: &'static str,
+    resource: String,
+    commit: Commit,
+    uploads: Vec<PathBuf>,
+    make: F,
+) -> Res<Outcome>
+where
+    F: FnOnce(&mut Repo) -> Result<Plan, RepoError> + Send + 'static,
+{
     let st2 = st.clone();
-    let user = caller.user.name.clone();
     let out = st
         .writer
         .run(move |repo| -> Result<Outcome, ApiError> {
@@ -580,6 +618,7 @@ struct CreateReq {
 
 async fn create_publish(State(st): St, caller: Caller, Json(req): Json<CreateReq>) -> Res<Outcome> {
     caller.need(Role::Admin)?;
+    crate::configfile::refuse(&st, "publish", &req.alias)?;
     st.cfg
         .allows_publish_path(&req.layout.path)
         .map_err(ApiError::invalid)?;
