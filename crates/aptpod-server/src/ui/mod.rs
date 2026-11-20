@@ -31,6 +31,17 @@ const LOGIN_CSRF: &str = "aptpod_login";
 const HTMX: &[u8] = include_bytes!("../../assets/htmx.min.js");
 const CSS: &[u8] = include_bytes!("../../assets/style.css");
 
+/// `ui/style-<hash>.css`: a new stylesheet gets a new URL, so caches never
+/// serve an old one after an upgrade.
+fn css_path() -> &'static str {
+    static P: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    P.get_or_init(|| {
+        use sha2::Digest;
+        let h = crate::authdb::hex(&sha2::Sha256::digest(CSS));
+        format!("ui/style-{}.css", &h[..12])
+    })
+}
+
 /// Every link goes through here, so a sub-path deployment changes one place.
 pub fn base() -> &'static str {
     "/"
@@ -52,12 +63,22 @@ pub fn routes() -> Router<Arc<AppState>> {
             "/ui/htmx-2.0.11.min.js",
             get(|| asset(HTMX, "text/javascript")),
         )
-        .route("/ui/style.css", get(|| asset(CSS, "text/css")))
+        .route(&format!("/{}", css_path()), get(|| asset(CSS, "text/css")))
+        .route("/p/{alias}/matrix", get(matrix_part))
         .layer(map_response(security_headers))
 }
 
 async fn security_headers(mut r: Response) -> Response {
+    let html = r
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|t| t.starts_with("text/html"));
     let h = r.headers_mut();
+    if html {
+        // Pages can show secrets once (new tokens): never cache them.
+        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
     h.insert(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(
@@ -121,6 +142,7 @@ pub struct Shell {
     pub role: &'static str,
     pub csrf: String,
     pub base: &'static str,
+    pub css: &'static str,
 }
 
 /// A logged-in UI user. Non-GET requests are rejected without the
@@ -140,6 +162,7 @@ impl UiUser {
             role: self.user.role.as_str(),
             csrf: self.csrf.clone(),
             base: base(),
+            css: css_path(),
         }
     }
     pub(super) fn can(&self, role: Role) -> bool {
@@ -205,6 +228,23 @@ struct ErrorPart<'a> {
     message: &'a str,
 }
 
+#[derive(Template)]
+#[template(path = "error_page.html")]
+struct ErrorPage<'a> {
+    s: Shell,
+    message: &'a str,
+}
+
+/// An error as a whole page, with the error's status.
+pub(super) fn page_error(u: &UiUser, e: &ApiError) -> Response {
+    let mut r = render(&ErrorPage {
+        s: u.shell(),
+        message: e.message(),
+    });
+    *r.status_mut() = e.status();
+    r
+}
+
 /// API errors as an inline box (200, so htmx swaps it in).
 pub(super) fn error_part(e: &ApiError) -> Response {
     render(&ErrorPart {
@@ -250,6 +290,7 @@ fn login_form(st: &AppState, error: Option<String>, status: StatusCode) -> Respo
             role: "",
             csrf: String::new(),
             base: base(),
+            css: css_path(),
         },
         login_csrf: token.clone(),
         error,
@@ -446,7 +487,7 @@ async fn index(State(st): State<Arc<AppState>>, u: UiUser) -> Response {
     .await;
     match res {
         Ok(p) => render(&p),
-        Err(e) => error_part(&e),
+        Err(e) => page_error(&u, &e),
     }
 }
 
@@ -460,7 +501,7 @@ struct JobsPage {
 async fn jobs_page(State(st): State<Arc<AppState>>, u: UiUser) -> Response {
     match job_rows(&st, 200) {
         Ok(jobs) => render(&JobsPage { s: u.shell(), jobs }),
-        Err(e) => error_part(&e),
+        Err(e) => page_error(&u, &e),
     }
 }
 
@@ -483,7 +524,10 @@ struct JobPage {
 
 async fn job_page(State(st): State<Arc<AppState>>, u: UiUser, Path(id): Path<i64>) -> Response {
     let Ok(Some(j)) = st.auth.job(id) else {
-        return (StatusCode::NOT_FOUND, "no such job").into_response();
+        return page_error(
+            &u,
+            &ApiError::new(StatusCode::NOT_FOUND, "not_found", format!("no job {id}")),
+        );
     };
     let log = read_log(&st, id);
     render(&JobPage {
@@ -543,25 +587,10 @@ async fn publish_page(
     .await;
     let (layout, cells, publishes) = match got {
         Ok(x) => x,
-        Err(e) => return error_part(&e),
+        Err(e) => return page_error(&u, &e),
     };
-    let matrix = layout
-        .dists
-        .iter()
-        .map(|d| MatrixRow {
-            dist: d.clone(),
-            counts: layout
-                .components
-                .iter()
-                .map(|c| {
-                    cells
-                        .iter()
-                        .find(|x| &x.dist == d && &x.component == c)
-                        .map_or("–".to_string(), |x| x.packages.to_string())
-                })
-                .collect(),
-        })
-        .collect();
+    let matrix = matrix_rows(&layout, &cells);
+
     render(&PublishPage {
         s: u.shell(),
         managed: st.config_file.is_publish(&alias),
@@ -777,6 +806,48 @@ async fn rm(
             ],
             apply,
         ),
+        Err(e) => error_part(&e),
+    }
+}
+
+fn matrix_rows(layout: &aptpod_repo::Layout, cells: &[aptpod_repo::CellStatus]) -> Vec<MatrixRow> {
+    layout
+        .dists
+        .iter()
+        .map(|d| MatrixRow {
+            dist: d.clone(),
+            counts: layout
+                .components
+                .iter()
+                .map(|c| {
+                    cells
+                        .iter()
+                        .find(|x| &x.dist == d && &x.component == c)
+                        .map_or("–".to_string(), |x| x.packages.to_string())
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+#[derive(Template)]
+#[template(path = "matrix.html")]
+struct MatrixPart {
+    components: Vec<String>,
+    matrix: Vec<MatrixRow>,
+}
+
+async fn matrix_part(
+    State(st): State<Arc<AppState>>,
+    _u: UiUser,
+    Path(alias): Path<String>,
+) -> Response {
+    let got = crate::api::read(&st, move |r| Ok((r.layout(&alias)?, r.status(&alias)?))).await;
+    match got {
+        Ok((layout, cells)) => render(&MatrixPart {
+            matrix: matrix_rows(&layout, &cells),
+            components: layout.components.clone(),
+        }),
         Err(e) => error_part(&e),
     }
 }

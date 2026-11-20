@@ -1,0 +1,8 @@
+<table class="matrix">
+  <thead><tr><th></th>{% for c in components %}<th>{{ c }}</th>{% endfor %}</tr></thead>
+  <tbody>
+  {% for row in matrix %}
+  <tr><th>{{ row.dist }}</th>{% for n in row.counts %}<td class="num">{{ n }}</td>{% endfor %}</tr>
+  {% endfor %}
+  </tbody>
+</table>

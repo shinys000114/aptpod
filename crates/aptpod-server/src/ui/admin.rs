@@ -113,7 +113,7 @@ async fn mirrors_page(State(st): State<Arc<AppState>>, u: UiUser) -> Response {
                 })
                 .collect(),
         }),
-        Err(e) => error_part(&e),
+        Err(e) => super::page_error(&u, &e),
     }
 }
 
@@ -159,7 +159,7 @@ async fn mirror_page(
                 name: v.name,
             })
         }
-        Err(e) => error_part(&e),
+        Err(e) => super::page_error(&u, &e),
     }
 }
 
@@ -343,7 +343,7 @@ async fn account_page(State(st): State<Arc<AppState>>, u: UiUser) -> Response {
             new_token: None,
             errors: vec![],
         }),
-        Err(e) => error_part(&e),
+        Err(e) => super::page_error(&u, &e),
     }
 }
 
@@ -405,7 +405,8 @@ async fn password(
         new: f.new,
     };
     match crate::users::own_password(State(st.clone()), u.caller(), Json(req)).await {
-        Ok(_) => message(true, vec!["Password changed.".into()], None),
+        // Every session of the user ended with the change: log in again.
+        Ok(_) => ([("hx-redirect", format!("{}login", base()))], "").into_response(),
         Err(e) => error_part(&e),
     }
 }
@@ -453,7 +454,7 @@ async fn users_page(State(st): State<Arc<AppState>>, u: UiUser) -> Response {
             users,
             errors: vec![],
         }),
-        Err(e) => error_part(&e),
+        Err(e) => super::page_error(&u, &e),
     }
 }
 

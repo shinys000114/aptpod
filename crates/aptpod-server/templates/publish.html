@@ -5,14 +5,9 @@
 <p class="mono">{{ path }}</p>
 
 <h2>Cells</h2>
-<table class="matrix">
-  <thead><tr><th></th>{% for c in components %}<th>{{ c }}</th>{% endfor %}</tr></thead>
-  <tbody>
-  {% for row in matrix %}
-  <tr><th>{{ row.dist }}</th>{% for n in row.counts %}<td class="num">{{ n }}</td>{% endfor %}</tr>
-  {% endfor %}
-  </tbody>
-</table>
+<div id="matrix" hx-get="{{ s.base }}p/{{ alias }}/matrix" hx-trigger="packages-changed from:body">
+{% include "matrix.html" %}
+</div>
 
 <h2>Packages</h2>
 <form class="filter" hx-get="{{ s.base }}p/{{ alias }}/packages" hx-target="#packages" hx-trigger="input changed delay:300ms, submit">
@@ -20,7 +15,7 @@
   <select name="dist"><option value="">all dists</option>{% for d in dists %}<option>{{ d }}</option>{% endfor %}</select>
   <select name="component"><option value="">all components</option>{% for c in components %}<option>{{ c }}</option>{% endfor %}</select>
 </form>
-<div id="packages" hx-get="{{ s.base }}p/{{ alias }}/packages" hx-trigger="load, packages-changed from:body">
+<div id="packages" hx-get="{{ s.base }}p/{{ alias }}/packages" hx-trigger="load, packages-changed from:body" hx-include="form.filter">
 </div>
 
 {% if can_publish %}

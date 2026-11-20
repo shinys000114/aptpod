@@ -37,3 +37,7 @@ form.inline { display: flex; gap: .4rem; flex-wrap: wrap; }
 label.check { display: inline-flex; gap: .3rem; align-items: center; }
 textarea { font: 13px/1.4 ui-monospace, monospace; padding: .5rem; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); color: var(--fg); }
 code { font-family: ui-monospace, monospace; }
+/* In-flight requests (htmx adds .htmx-request; its own injected styles are
+   off for the CSP). */
+.htmx-request, button.htmx-request { opacity: .6; cursor: progress; }
+button.htmx-request::after { content: " …"; }

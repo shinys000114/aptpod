@@ -35,6 +35,12 @@ mirror_roots = []
 # `aptpod config plan`.
 #config_file = "/etc/aptpod/aptpod.toml"
 
+# Web UI session cookies: set cookie_secure = true when (as recommended) a
+# TLS proxy is in front, so browsers send them over HTTPS only. Sessions
+# last session_hours; a password change ends them (API tokens stay).
+#cookie_secure = false
+#session_hours = 12
+
 # Largest accepted upload in bytes (default 2 GiB).
 #upload_limit = 2147483648
 

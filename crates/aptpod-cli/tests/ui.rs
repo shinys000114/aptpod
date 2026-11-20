@@ -663,6 +663,10 @@ fn web_ui_admin() {
         &[("current", "nope-nope"), ("new", "admin-password-2")],
     );
     assert!(err.contains("current password is wrong"), "{err}");
+    // A page that does not exist: an error page with its status.
+    let r = a.get(format!("{url}p/nope")).send().unwrap();
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    assert!(r.text().unwrap().contains("<h1>Error</h1>"));
 
     // Users: an admin adds and changes them; a publisher may not.
     let (_, users) = htmx_post(
@@ -709,6 +713,21 @@ fn web_ui_admin() {
             .text()
             .unwrap()
             .contains("name=\"layout\"")
+    );
+    // A password change ends every web session of that user.
+    let other = browser();
+    ui_login(&other, &url, "ci");
+    let ct = ui_login(&c, &url, "ci");
+    let (st, _) = htmx_post(
+        &c,
+        &format!("{url}account/password"),
+        Some(&ct),
+        &[("current", "ci-password"), ("new", "ci-password-2")],
+    );
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(
+        other.get(&url).send().unwrap().status(),
+        StatusCode::SEE_OTHER
     );
     assert!(srv.stop().success());
 }

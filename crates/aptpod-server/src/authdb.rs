@@ -343,6 +343,14 @@ impl AuthDb {
             .optional()
     }
 
+    /// Ends every web session of a user (after a password change). API
+    /// tokens are kept; they are revoked separately.
+    pub fn sessions_delete_user(&self, user: i64) -> R<()> {
+        self.conn()
+            .execute("DELETE FROM sessions WHERE user = ?1", [user])?;
+        Ok(())
+    }
+
     pub fn session_delete(&self, id: &str) -> R<()> {
         self.conn()
             .execute("DELETE FROM sessions WHERE hash = ?1", [token_hash(id)])?;

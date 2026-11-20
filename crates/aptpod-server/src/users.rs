@@ -103,6 +103,7 @@ pub(crate) async fn own_password(
     }
     let h = hash(&st, req.new).await?;
     st.auth.set_password(&name, &h)?;
+    st.auth.sessions_delete_user(caller.user.id)?;
     tracing::info!(user = %name, "password changed");
     Ok(Json(json!({})))
 }
@@ -176,6 +177,7 @@ pub(crate) async fn user_set(
     if let Some(pw) = req.password {
         let h = hash(&st, pw).await?;
         st.auth.set_password(&name, &h)?;
+        st.auth.sessions_delete_user(user.id)?;
     }
     tracing::info!(admin = %caller.user.name, user = %name, "user changed");
     Ok(Json(st.auth.user(&name)?.ok_or_else(|| not_found(&name))?))

@@ -56,8 +56,10 @@ are planned like any other, destructive ones refused unless the file says
 `force`, items missing from the file left alone. What the file declares
 is *managed*: the API refuses to edit it (`managed`, CLI exit 4), `config
 import` skips it with a warning, data operations (packages, snapshots,
-syncs) still work. A file that cannot be read keeps the previous state
-and marks. `aptpod-server config-check` checks a file offline, `aptpod
+syncs) still work. A file that cannot be read at a reload keeps the
+previous state and marks; the marks live in memory, so if the file is
+unreadable when the server starts, nothing is marked until it is fixed
+(logged). `aptpod-server config-check` checks a file offline, `aptpod
 config plan` previews a reload, `aptpod config status` shows the last one.
 
 ## Carry-over from aptrix
@@ -617,7 +619,15 @@ definition editor, sync, sync and prune for admins, stop, upstream
 check); jobs with logs that follow a running job; the own tokens
 (created once, revoked) and password; users for admins. Items of the
 config file are shown read-only. tests/ui.rs drives all of it with a
-cookie-keeping client, including the security invariants.
+cookie-keeping client, including the security invariants. Walked
+through in a real browser (the desktop app's): no console messages or CSP
+violations; htmx swaps, preview/apply, the matrix and the filtered list
+refreshing after a change, multi-line hidden fields (layout TOML),
+button-only posts (sync, check), job logs, tokens shown once, no-store
+on pages, and a password change ending the session all work. File
+upload is covered by the HTTP test only (the browser tool cannot attach
+files). A password change ends the user's web sessions; API tokens stay
+until revoked. Job log lines are stamped in UTC.
 
 ## Testing
 
