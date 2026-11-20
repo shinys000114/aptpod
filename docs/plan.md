@@ -546,7 +546,10 @@ empty files, and a mix of linked and written index files in fresh
 staging directories failed with EACCES: staging directories are now
 created before the parallel phase, small indices are written instead of
 linked, and permission/not-found errors on file creation are retried once.
-Not yet re-verified on the host after that last fix. The upstream PPA
+Re-verified on the host with 0.0.1-p4e3: three syncs clean, and the
+failing case forced (two indices made wrong in the test tree, 53 of 54
+reused per dist, the two fetched and written) passes. The two test
+mirrors are now declared in /etc/aptpod/aptpod.toml (config_file) there. The upstream PPA
 flips between two Release states within minutes (dists alternate between
 changed and unchanged, 21 vs 26 listed 404s). Next: P4c rsync kinds, P4d scheduler and
 public status.
