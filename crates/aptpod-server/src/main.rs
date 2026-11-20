@@ -5,6 +5,9 @@
 mod api;
 mod authdb;
 mod config;
+mod events;
+mod ops;
+mod users;
 mod writer;
 
 use std::path::{Path, PathBuf};
@@ -227,6 +230,8 @@ fn serve(cfg: Config) -> Result<(), String> {
         reader: Mutex::new(reader),
         uploads: uploads.clone(),
         logins: tokio::sync::Semaphore::new(4),
+        events: tokio::sync::broadcast::channel(256).0,
+        stopping: tokio::sync::watch::channel(false).0,
     });
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -253,7 +258,7 @@ fn serve(cfg: Config) -> Result<(), String> {
             }
         });
         axum::serve(listener, api::router(state.clone()))
-            .with_graceful_shutdown(shutdown_signal())
+            .with_graceful_shutdown(shutdown_signal(state.clone()))
             .await
             .map_err(|e| format!("serving: {e}"))
     });
@@ -264,7 +269,7 @@ fn serve(cfg: Config) -> Result<(), String> {
     res
 }
 
-async fn shutdown_signal() {
+async fn shutdown_signal(state: Arc<api::AppState>) {
     use tokio::signal::unix::{SignalKind, signal};
     let mut term = signal(SignalKind::terminate()).expect("SIGTERM handler");
     tokio::select! {
@@ -272,6 +277,7 @@ async fn shutdown_signal() {
         _ = term.recv() => {}
     }
     tracing::info!("shutting down");
+    state.stopping.send_replace(true);
 }
 
 #[cfg(test)]

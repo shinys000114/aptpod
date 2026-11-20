@@ -2,9 +2,11 @@
 
 //! `aptpod`: command line client for aptpod-server.
 
+mod account;
 mod client;
+mod ops;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -66,6 +68,10 @@ enum Cmd {
         /// Replace a pool file that has different content under the same name.
         #[arg(long)]
         replace: bool,
+        /// sha256sum-style file (or URL) listing every file by its base
+        /// name; uploads that do not match are refused before any change.
+        #[arg(long)]
+        checksums: Option<String>,
         #[command(flatten)]
         commit: CommitArgs,
     },
@@ -88,7 +94,14 @@ enum Cmd {
     Jobs {
         #[arg(short = 'n', long, default_value_t = 20)]
         limit: usize,
+        /// Then print job events as they happen (until interrupted).
+        #[arg(short, long)]
+        follow: bool,
     },
+    #[command(flatten)]
+    Ops(ops::OpsCmd),
+    #[command(flatten)]
+    Account(account::AccountCmd),
 }
 
 #[derive(Subcommand)]
@@ -97,6 +110,40 @@ enum PublishCmd {
     Ls,
     /// Shows a publish's layout and package counts.
     Show { alias: String },
+    /// Prints a publish's layout as TOML.
+    Get { alias: String },
+    /// Replaces a publish's layout from a TOML file, `-` for stdin (admin).
+    Set {
+        alias: String,
+        file: PathBuf,
+        /// Allow dropping cells or architectures that hold packages.
+        #[arg(long)]
+        force: bool,
+        /// Take over a new path that already holds a repository tree.
+        #[arg(long)]
+        adopt: bool,
+        #[command(flatten)]
+        commit: CommitArgs,
+    },
+    /// Edits a publish's layout in $VISUAL / $EDITOR (admin).
+    Edit {
+        alias: String,
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        adopt: bool,
+        #[command(flatten)]
+        commit: CommitArgs,
+    },
+    /// Deletes a publish and its published tree (admin).
+    Delete {
+        alias: String,
+        /// Delete although it still has packages.
+        #[arg(long)]
+        force: bool,
+        #[command(flatten)]
+        commit: CommitArgs,
+    },
     /// Creates a publish (admin).
     Create {
         alias: String,
@@ -235,9 +282,11 @@ fn run(cli: Cli) -> Result<(), CliError> {
             dist,
             all_dists,
             replace,
+            checksums,
             commit,
         } => {
             let c = Client::new(&need_server()?, token)?;
+            let sums = checksums.map(|s| load_checksums(&c, &s)).transpose()?;
             let dists = if all_dists {
                 json!("all")
             } else if dist.is_empty() {
@@ -245,7 +294,12 @@ fn run(cli: Cli) -> Result<(), CliError> {
             } else {
                 json!(dist)
             };
-            add(&c, &alias, &component, &files, dists, replace, commit, json)?;
+            let opts = AddOpts {
+                dists,
+                replace,
+                sums,
+            };
+            add(&c, &alias, &component, &files, opts, commit, json)?;
         }
         Cmd::Ls {
             alias,
@@ -280,8 +334,13 @@ fn run(cli: Cli) -> Result<(), CliError> {
                 print_table(&cols, &rows);
             }
         }
-        Cmd::Jobs { limit } => {
+        Cmd::Ops(cmd) => ops::run(&Client::new(&need_server()?, token)?, cmd, json)?,
+        Cmd::Account(cmd) => account::run(&Client::new(&need_server()?, token)?, cmd, json)?,
+        Cmd::Jobs { limit, follow } => {
             let c = Client::new(&need_server()?, token)?;
+            // Subscribe first, so nothing between the listing and the
+            // stream is missed.
+            let events = follow.then(|| c.events()).transpose()?;
             let jobs: Vec<Value> = c.get("/api/v1/jobs", &[("limit", limit.to_string())])?;
             if json {
                 print_json(&Value::Array(jobs));
@@ -298,6 +357,29 @@ fn run(cli: Cli) -> Result<(), CliError> {
                         j["state"].as_str().unwrap_or(""),
                         j["kind"].as_str().unwrap_or(""),
                         j["resource"].as_str().unwrap_or(""),
+                        text
+                    );
+                }
+            }
+            if let Some(events) = events {
+                for ev in events {
+                    let ev = ev?;
+                    if json {
+                        println!("{ev}");
+                        continue;
+                    }
+                    let text = ev["error"]
+                        .as_str()
+                        .map(|e| format!("error: {e}"))
+                        .or_else(|| ev["summary"].as_str().map(String::from))
+                        .unwrap_or_default();
+                    println!(
+                        "#{} {} {} {} {} {}",
+                        ev["id"],
+                        ev["state"].as_str().unwrap_or(""),
+                        ev["kind"].as_str().unwrap_or(""),
+                        ev["resource"].as_str().unwrap_or(""),
+                        ev["user"].as_str().unwrap_or(""),
                         text
                     );
                 }
@@ -347,6 +429,70 @@ fn publish(c: Client, cmd: PublishCmd, json: bool) -> Result<(), CliError> {
                 }
             }
         }
+        PublishCmd::Get { alias } => {
+            let p: Value = c.get(&format!("/api/v1/publishes/{alias}"), &[])?;
+            print!("{}", layout_toml(&p["layout"])?);
+        }
+        PublishCmd::Set {
+            alias,
+            file,
+            force,
+            adopt,
+            commit,
+        } => {
+            let text = if file.as_os_str() == "-" {
+                std::io::read_to_string(std::io::stdin())
+            } else {
+                std::fs::read_to_string(&file)
+            }
+            .map_err(|e| CliError::other(format!("{}: {e}", file.display())))?;
+            let layout = parse_layout(&text, &file.display().to_string())?;
+            let body = json!({ "layout": layout, "force": force, "adopt": adopt });
+            preview_apply(
+                &c,
+                &format!("/api/v1/publishes/{alias}/layout"),
+                body,
+                commit,
+                json,
+            )?;
+        }
+        PublishCmd::Edit {
+            alias,
+            force,
+            adopt,
+            commit,
+        } => {
+            let p: Value = c.get(&format!("/api/v1/publishes/{alias}"), &[])?;
+            let before = layout_toml(&p["layout"])?;
+            let after = edit_text(&before)?;
+            if after == before {
+                println!("no changes");
+                return Ok(());
+            }
+            let layout = parse_layout(&after, "the edited layout")?;
+            let body = json!({ "layout": layout, "force": force, "adopt": adopt });
+            preview_apply(
+                &c,
+                &format!("/api/v1/publishes/{alias}/layout"),
+                body,
+                commit,
+                json,
+            )?;
+        }
+        PublishCmd::Delete {
+            alias,
+            force,
+            commit,
+        } => {
+            let body = json!({ "force": force });
+            preview_apply(
+                &c,
+                &format!("/api/v1/publishes/{alias}/delete"),
+                body,
+                commit,
+                json,
+            )?;
+        }
         PublishCmd::Create {
             alias,
             path,
@@ -381,17 +527,72 @@ fn publish(c: Client, cmd: PublishCmd, json: bool) -> Result<(), CliError> {
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+struct AddOpts {
+    dists: Value,
+    replace: bool,
+    /// base name -> sha256
+    sums: Option<BTreeMap<String, String>>,
+}
+
+/// Reads `sha256sum` output: `<hex>  <name>` or `<hex> *<name>`.
+fn parse_checksums(text: &str, what: &str) -> Result<BTreeMap<String, String>, CliError> {
+    let mut out = BTreeMap::new();
+    for (i, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let bad = || CliError::usage(format!("{what}:{}: not a sha256sum line", i + 1));
+        let (hash, name) = line.split_once(char::is_whitespace).ok_or_else(bad)?;
+        let name = name.trim_start().trim_start_matches('*');
+        if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) || name.is_empty() {
+            return Err(bad());
+        }
+        let base = name.rsplit('/').next().unwrap_or(name);
+        out.insert(base.to_string(), hash.to_ascii_lowercase());
+    }
+    Ok(out)
+}
+
+fn load_checksums(c: &Client, src: &str) -> Result<BTreeMap<String, String>, CliError> {
+    let text = if src.starts_with("http://") || src.starts_with("https://") {
+        let dir = tempfile::tempdir().map_err(|e| CliError::other(e.to_string()))?;
+        let p = c.download(src, dir.path())?;
+        std::fs::read_to_string(p)
+    } else {
+        std::fs::read_to_string(src)
+    }
+    .map_err(|e| CliError::other(format!("{src}: {e}")))?;
+    parse_checksums(&text, src)
+}
+
+fn base_name(s: &str) -> &str {
+    let s = s.split(['?', '#']).next().unwrap_or(s);
+    s.rsplit('/').next().unwrap_or(s)
+}
+
 fn add(
     c: &Client,
     alias: &str,
     component: &str,
     files: &[String],
-    dists: Value,
-    replace: bool,
+    opts: AddOpts,
     commit: CommitArgs,
     json: bool,
 ) -> Result<(), CliError> {
+    if let Some(sums) = &opts.sums {
+        let missing: Vec<&str> = files
+            .iter()
+            .map(|f| base_name(f))
+            .filter(|b| !sums.contains_key(*b))
+            .collect();
+        if !missing.is_empty() {
+            return Err(CliError::usage(format!(
+                "not in the checksums: {}",
+                missing.join(", ")
+            )));
+        }
+    }
     // URLs are fetched here, not by the server: it never makes requests on
     // a client's behalf.
     let tmp = tempfile::tempdir().map_err(|e| CliError::other(format!("temporary dir: {e}")))?;
@@ -417,6 +618,16 @@ fn add(
     let mut names = Vec::new();
     for (path, name) in &local {
         let up: Value = c.upload(path)?;
+        if let Some(sums) = &opts.sums {
+            let want = &sums[base_name(name)];
+            let got = up["sha256"].as_str().unwrap_or_default();
+            if got != want {
+                return Err(CliError {
+                    kind: "conflict".into(),
+                    message: format!("{name}: sha256 {got} does not match the checksums ({want})"),
+                });
+            }
+        }
         ids.push(up["id"].as_str().unwrap_or_default().to_string());
         names.push(name.clone());
     }
@@ -424,8 +635,8 @@ fn add(
         "component": component,
         "uploads": ids,
         "names": names,
-        "dists": dists,
-        "replace": replace,
+        "dists": opts.dists,
+        "replace": opts.replace,
     });
     preview_apply(
         c,
@@ -482,6 +693,42 @@ fn preview_apply(
         print_applied(&out["applied"]);
     }
     Ok(())
+}
+
+fn layout_toml(layout: &Value) -> Result<String, CliError> {
+    toml::to_string(layout).map_err(|e| CliError::other(format!("layout as TOML: {e}")))
+}
+
+fn parse_layout(text: &str, what: &str) -> Result<Value, CliError> {
+    toml::from_str(text).map_err(|e| CliError::usage(format!("{what}: {e}")))
+}
+
+/// Opens `text` in the user's editor and returns the result.
+fn edit_text(text: &str) -> Result<String, CliError> {
+    let fail = |e: std::io::Error| CliError::other(format!("editing: {e}"));
+    let file = tempfile::Builder::new()
+        .prefix("aptpod-layout-")
+        .suffix(".toml")
+        .tempfile()
+        .map_err(fail)?;
+    std::fs::write(file.path(), text).map_err(fail)?;
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "vi".into());
+    // Through the shell, so EDITOR may carry arguments ("code -w").
+    let st = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("{editor} \"$1\""))
+        .arg("sh")
+        .arg(file.path())
+        .status()
+        .map_err(fail)?;
+    if !st.success() {
+        return Err(CliError::other(format!(
+            "{editor} failed ({st}); nothing changed"
+        )));
+    }
+    std::fs::read_to_string(file.path()).map_err(fail)
 }
 
 fn print_plan(plan: &Value) {
@@ -572,6 +819,23 @@ fn hostname() -> String {
 #[cfg(test)]
 mod tests {
     use clap::CommandFactory;
+
+    #[test]
+    fn checksums() {
+        let h = "a".repeat(64);
+        let sums = super::parse_checksums(
+            &format!(
+                "# comment\n{h}  dir/x_1_amd64.deb\n{}  *y.deb\n",
+                "B".repeat(64)
+            ),
+            "SUMS",
+        )
+        .unwrap();
+        assert_eq!(sums["x_1_amd64.deb"], h);
+        assert_eq!(sums["y.deb"], "b".repeat(64));
+        assert!(super::parse_checksums("abc  x.deb", "SUMS").is_err());
+        assert_eq!(super::base_name("https://h/p/x.deb?sig=1"), "x.deb");
+    }
 
     #[test]
     fn cli_definition_is_valid() {

@@ -116,8 +116,13 @@ struct Cli {
 
 impl Cli {
     fn run(&self, args: &[&str], stdin: &str) -> Output {
+        self.run_env(args, stdin, &[])
+    }
+
+    fn run_env(&self, args: &[&str], stdin: &str, env: &[(&str, &str)]) -> Output {
         let mut child = Command::new(env!("CARGO_BIN_EXE_aptpod"))
             .args(args)
+            .envs(env.iter().copied())
             .env("APTPOD_CREDENTIALS", &self.creds)
             .env("APTPOD_SERVER", &self.url)
             .env_remove("APTPOD_TOKEN")
@@ -192,14 +197,17 @@ fn upload(url: &str, token: &str, data: Vec<u8>) -> (u16, Value) {
     (resp.status().as_u16(), resp.json().unwrap_or(Value::Null))
 }
 
-#[test]
-fn server_and_cli() {
+/// Checks the tools, writes server.toml and adds the users admin, ci
+/// (publisher) and viewer (reader), each with password `<name>-password`.
+fn prepare() -> Option<(tempfile::TempDir, PathBuf, PathBuf)> {
     let server_bin = PathBuf::from(env!("CARGO_BIN_EXE_aptpod")).with_file_name("aptpod-server");
     if !server_bin.is_file() {
-        return require("the aptpod-server binary (cargo build --workspace)");
+        require("the aptpod-server binary (cargo build --workspace)");
+        return None;
     }
     if Command::new("dpkg-deb").arg("--version").output().is_err() {
-        return require("dpkg-deb");
+        require("dpkg-deb");
+        return None;
     }
     let dir = tempfile::tempdir().unwrap();
     let d = dir.path();
@@ -234,6 +242,24 @@ fn server_and_cli() {
             .unwrap();
         assert!(c.wait().unwrap().success());
     }
+    Some((dir, server_bin, cfg))
+}
+
+fn login(c: &Cli, user: &str) {
+    let out = c.run(
+        &["login", "--user", user, "--password-stdin"],
+        &format!("{user}-password\n"),
+    );
+    assert!(out.status.success(), "{}", text(&out));
+}
+
+#[test]
+fn server_and_cli() {
+    let Some((dir, server_bin, cfg)) = prepare() else {
+        return;
+    };
+    let d = dir.path();
+    let roots = d.join("trees");
 
     let srv = Server::start(&server_bin, &cfg);
     // One server per data directory.
@@ -515,4 +541,485 @@ fn server_and_cli() {
     assert!(!viewer.creds.exists());
     assert_eq!(api(&srv.url, &old, "GET", "/api/v1/whoami", None).0, 401);
     assert!(srv.stop().success());
+}
+
+/// rm, prune, promote (across components and publishes), find, snapshots,
+/// history, diff, rollback, layout get/set/edit, delete, gc and repair.
+#[test]
+fn operations() {
+    let Some((dir, bin, cfg)) = prepare() else {
+        return;
+    };
+    let d = dir.path();
+    let roots = d.join("trees");
+    let srv = Server::start(&bin, &cfg);
+    let cli = |name: &str| Cli {
+        creds: d.join(format!("{name}.toml")),
+        url: srv.url.clone(),
+    };
+    let (admin, ci, viewer) = (cli("admin"), cli("ci"), cli("viewer"));
+    for (c, u) in [(&admin, "admin"), (&ci, "ci"), (&viewer, "viewer")] {
+        login(c, u);
+    }
+    let (t, u) = (roots.join("t"), roots.join("u"));
+    let (tp, up) = (t.display().to_string(), u.display().to_string());
+    admin.ok(&[
+        "publish",
+        "create",
+        "t",
+        "--path",
+        &tp,
+        "--dist",
+        "jammy,noble",
+        "--component",
+        "main,extra",
+        "--arch",
+        "amd64",
+        "--label",
+        "lbl1",
+        "--no-sign",
+        "-y",
+    ]);
+    admin.ok(&[
+        "publish",
+        "create",
+        "u",
+        "--path",
+        &up,
+        "--dist",
+        "noble",
+        "--component",
+        "main",
+        "--arch",
+        "amd64",
+        "--no-sign",
+        "-y",
+    ]);
+
+    let debs = d.join("debs");
+    std::fs::create_dir_all(&debs).unwrap();
+    let files: Vec<String> = [
+        ("aa", "1.0"),
+        ("aa", "1.1"),
+        ("aa", "1.2"),
+        ("bb", "1.0"),
+        ("aa-dbg", "1.0"),
+    ]
+    .iter()
+    .map(|(n, v)| build_deb(&debs, n, v).display().to_string())
+    .collect();
+    let mut args = vec!["add", "t", "main", "--dist", "noble", "-y"];
+    args.extend(files.iter().map(String::as_str));
+    ci.ok(&args);
+
+    let names = |c: &Cli, args: &[&str]| -> Vec<String> {
+        let rows: Vec<Value> = serde_json::from_str(&c.ok(args)).unwrap();
+        rows.iter()
+            .map(|r| {
+                format!(
+                    "{}/{} {}={}",
+                    r["dist"].as_str().unwrap(),
+                    r["component"].as_str().unwrap(),
+                    r["name"].as_str().unwrap(),
+                    r["version"].as_str().unwrap()
+                )
+            })
+            .collect()
+    };
+
+    assert!(
+        ci.ok(&[
+            "snapshot",
+            "create",
+            "t",
+            "before-rm",
+            "-m",
+            "five packages"
+        ])
+        .starts_with("before-rm -> #")
+    );
+    // rm needs a selection; a glob removes only what it matches.
+    assert!(ci.fails(&["rm", "t", "main", "-y"], 1).contains("--all"));
+    assert!(
+        viewer
+            .fails(&["rm", "t", "main", "aa-*", "-y"], 7)
+            .contains("publisher")
+    );
+    let out = ci.ok(&["rm", "t", "main", "aa-*", "-y"]);
+    assert!(out.contains("aa-dbg"), "{out}");
+    ci.ok(&["prune", "t", "--keep", "2", "-y"]);
+    assert_eq!(
+        names(&viewer, &["ls", "t", "--json"]),
+        [
+            "noble/main aa=1.2",
+            "noble/main aa=1.1",
+            "noble/main bb=1.0"
+        ]
+    );
+
+    // promote: newest only, to another component; to another publish.
+    ci.ok(&[
+        "promote",
+        "t",
+        "main",
+        "aa",
+        "--to-component",
+        "extra",
+        "-y",
+    ]);
+    ci.ok(&["promote", "t", "main", "bb", "--to-publish", "u", "-y"]);
+    assert!(
+        ci.fails(&["promote", "t", "main", "-y"], 1)
+            .contains("--all")
+    );
+    assert_eq!(
+        names(&viewer, &["ls", "t", "-c", "extra", "--json"]),
+        ["noble/extra aa=1.2"]
+    );
+    assert_eq!(
+        names(&viewer, &["ls", "u", "--json"]),
+        ["noble/main bb=1.0"]
+    );
+    let found = viewer.ok(&["find", "bb", "aa", "--newest"]);
+    assert_eq!(found.lines().count(), 4, "{found}");
+    assert!(found.lines().any(|l| l.starts_with("u ")), "{found}");
+
+    // history, diff and rollback to the label.
+    let hist = viewer.ok(&["history", "t"]);
+    assert!(
+        hist.contains("(HEAD)") && hist.contains("[before-rm]"),
+        "{hist}"
+    );
+    let diff = viewer.ok(&["diff", "t", "before-rm"]);
+    assert!(diff.contains("- noble/main aa-dbg 1.0 amd64"), "{diff}");
+    assert!(diff.contains("- noble/main aa 1.0 amd64"), "{diff}");
+    assert!(diff.contains("+ noble/extra aa 1.2 amd64"), "{diff}");
+    ci.ok(&["rollback", "t", "before-rm", "-y"]);
+    assert_eq!(names(&viewer, &["ls", "t", "--json"]).len(), 5);
+    assert!(t.join("pool/main/a/aa-dbg/aa-dbg_1.0_amd64.deb").is_file());
+    assert_eq!(viewer.ok(&["diff", "t", "before-rm"]), "");
+
+    // Snapshot labels.
+    assert!(
+        viewer
+            .ok(&["snapshot", "ls", "t"])
+            .starts_with("before-rm\t#")
+    );
+    let dry = ci.ok(&["snapshot", "prune", "t", "--older-than", "0", "-n"]);
+    assert!(
+        dry.contains("would drop") && dry.contains("before-rm"),
+        "{dry}"
+    );
+    ci.ok(&["snapshot", "drop", "t", "before-rm"]);
+    assert_eq!(viewer.ok(&["snapshot", "ls", "t"]), "");
+    ci.fails(&["snapshot", "drop", "t", "before-rm"], 1);
+
+    // Layout as TOML: set from stdin (dropping a dist with packages is
+    // blocked without --force), edit through $EDITOR.
+    let layout = viewer.ok(&["publish", "get", "t"]);
+    assert!(
+        layout.contains("dists = [\"jammy\", \"noble\"]"),
+        "{layout}"
+    );
+    let no_noble = layout.replace("dists = [\"jammy\", \"noble\"]", "dists = [\"jammy\"]");
+    assert_eq!(
+        ci.run(&["publish", "set", "t", "-", "-y"], &no_noble)
+            .status
+            .code(),
+        Some(7)
+    );
+    let out = admin.run(&["publish", "set", "t", "-", "-y"], &no_noble);
+    assert_eq!(out.status.code(), Some(5), "{}", text(&out));
+    let no_jammy = layout.replace("dists = [\"jammy\", \"noble\"]", "dists = [\"noble\"]");
+    let out = admin.run(&["publish", "set", "t", "-", "-y"], &no_jammy);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(!t.join("dists/jammy").exists());
+    let out = admin.run_env(
+        &["publish", "edit", "t", "-y"],
+        "",
+        &[("VISUAL", "sed -i s/lbl1/lbl2/")],
+    );
+    assert!(out.status.success(), "{}", text(&out));
+    let release = std::fs::read_to_string(t.join("dists/noble/Release")).unwrap();
+    assert!(release.contains("Label: lbl2"), "{release}");
+    let out = admin.run_env(&["publish", "edit", "t"], "", &[("VISUAL", "true")]);
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("no changes"),
+        "{}",
+        text(&out)
+    );
+
+    // Delete: blocked while packages are left.
+    assert_eq!(
+        admin
+            .run(&["publish", "delete", "u", "-y"], "")
+            .status
+            .code(),
+        Some(5)
+    );
+    admin.ok(&["publish", "delete", "u", "--force", "-y"]);
+    assert!(!u.join("dists/noble").exists() && !u.join("pool").exists());
+    assert!(!admin.ok(&["publish", "ls"]).contains("u\t"));
+
+    // Maintenance (admin only).
+    ci.fails(&["gc"], 7);
+    assert!(admin.ok(&["gc"]).contains("revision(s) expired"));
+    assert!(admin.ok(&["repair"]).contains("up to date"));
+    let jobs = viewer.ok(&["jobs", "-n", "100"]);
+    for kind in [
+        "rm", "prune", "promote", "rollback", "snapshot", "layout", "delete", "gc", "repair",
+    ] {
+        assert!(jobs.contains(&format!("done {kind} ")), "{kind}: {jobs}");
+    }
+    assert!(srv.stop().success());
+}
+
+/// Tokens, users and passwords through the API; add --checksums; config
+/// export/import; the job event stream and stopping with a follower.
+#[test]
+fn accounts_config_events() {
+    let Some((dir, bin, cfg)) = prepare() else {
+        return;
+    };
+    let d = dir.path();
+    let roots = d.join("trees");
+    let srv = Server::start(&bin, &cfg);
+    let cli = |name: &str| Cli {
+        creds: d.join(format!("{name}.toml")),
+        url: srv.url.clone(),
+    };
+    let (admin, ci) = (cli("admin"), cli("ci"));
+    login(&admin, "admin");
+    login(&ci, "ci");
+
+    // Follow events from the start.
+    let mut follower = Command::new(env!("CARGO_BIN_EXE_aptpod"))
+        .args(["jobs", "--follow", "-n", "0"])
+        .env("APTPOD_CREDENTIALS", &admin.creds)
+        .env("APTPOD_SERVER", &srv.url)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
+    let (tx, events) = mpsc::channel::<String>();
+    let out = follower.stdout.take().unwrap();
+    std::thread::spawn(move || {
+        for line in BufReader::new(out).lines().map_while(Result::ok) {
+            let _ = tx.send(line);
+        }
+    });
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Tokens: a CI token works on its own and can be revoked.
+    let t = ci.ok(&["token", "create", "jenkins"]).trim().to_string();
+    assert!(t.starts_with("aptpod_"));
+    assert!(ci.ok(&["--token", &t, "whoami"]).starts_with("ci "));
+    let list = ci.ok(&["token", "ls"]);
+    let id = list
+        .lines()
+        .find(|l| l.contains("\tjenkins\t"))
+        .and_then(|l| l.split('\t').next())
+        .unwrap()
+        .to_string();
+    ci.ok(&["token", "revoke", &id]);
+    ci.fails(&["--token", &t, "whoami"], 7);
+
+    // Users (admin); the last admin stays.
+    ci.fails(&["user", "ls"], 7);
+    let out = admin.run(
+        &["user", "add", "bot", "--role", "reader", "--password-stdin"],
+        "bot-password\n",
+    );
+    assert!(out.status.success(), "{}", text(&out));
+    let out = admin.run(
+        &["user", "add", "bot", "--password-stdin"],
+        "bot-password\n",
+    );
+    assert_eq!(out.status.code(), Some(4), "{}", text(&out));
+    admin.ok(&["user", "role", "bot", "publisher"]);
+    assert!(admin.ok(&["user", "ls"]).contains("bot\tpublisher"));
+    assert!(
+        admin
+            .fails(&["user", "role", "admin", "reader"], 4)
+            .contains("last admin")
+    );
+    assert!(
+        admin
+            .fails(&["user", "del", "admin"], 4)
+            .contains("last admin")
+    );
+    let bot = cli("bot");
+    login(&bot, "bot");
+    let out = admin.run(
+        &["user", "passwd", "bot", "--password-stdin"],
+        "bot-password-2\n",
+    );
+    assert!(out.status.success(), "{}", text(&out));
+    let out = bot.run(
+        &["login", "--user", "bot", "--password-stdin"],
+        "bot-password\n",
+    );
+    assert_eq!(out.status.code(), Some(7));
+    // Own password: the current one is checked.
+    let out = bot.run(
+        &["passwd", "--password-stdin"],
+        "wrong-password\nbot-password-3\n",
+    );
+    assert_eq!(out.status.code(), Some(7), "{}", text(&out));
+    let out = bot.run(
+        &["passwd", "--password-stdin"],
+        "bot-password-2\nbot-password-3\n",
+    );
+    assert!(out.status.success(), "{}", text(&out));
+    admin.ok(&["user", "del", "bot"]);
+    bot.fails(&["whoami"], 7);
+
+    // Config import: create two publishes from TOML.
+    let (a, b) = (roots.join("a"), roots.join("b"));
+    let config = format!(
+        "[publishes.a]\npath = {:?}\ndists = [\"noble\"]\ncomponents = [\"main\"]\narchitectures = [\"amd64\"]\nsign = false\n\n\
+         [publishes.b]\npath = {:?}\ndists = [\"jammy\", \"noble\"]\ncomponents = [\"main\"]\narchitectures = [\"amd64\"]\nsign = false\n",
+        a.display().to_string(),
+        b.display().to_string()
+    );
+    assert_eq!(
+        ci.run(&["config", "import", "-", "-y"], &config)
+            .status
+            .code(),
+        Some(7)
+    );
+    let overlap = config.replace(
+        &b.display().to_string(),
+        &a.join("sub").display().to_string(),
+    );
+    let out = admin.run(&["config", "import", "-", "-y"], &overlap);
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("overlapping"),
+        "{}",
+        text(&out)
+    );
+    let out = admin.run(&["config", "import", "-", "-n"], &config);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("[a]"),
+        "{}",
+        text(&out)
+    );
+    assert!(admin.ok(&["publish", "ls"]).is_empty());
+    let out = admin.run(&["config", "import", "-", "-y"], &config);
+    assert!(out.status.success(), "{}", text(&out));
+    assert_eq!(admin.ok(&["publish", "ls"]).lines().count(), 2);
+    let again = admin.run(&["config", "import", "-", "-y"], &config);
+    assert!(
+        String::from_utf8_lossy(&again.stdout).contains("nothing to do"),
+        "{}",
+        text(&again)
+    );
+
+    // Export round-trips; an edit of one publish only touches that one.
+    let exported = admin.ok(&["config", "export"]);
+    assert!(
+        exported.contains("[publishes.a]") && exported.contains("[publishes.b]"),
+        "{exported}"
+    );
+    let edited = exported.replace("dists = [\"jammy\", \"noble\"]", "dists = [\"noble\"]");
+    let out = admin.run(&["config", "import", "-", "-y"], &edited);
+    assert!(out.status.success(), "{}", text(&out));
+    let hist_a = admin.ok(&["history", "a"]);
+    assert_eq!(hist_a.lines().count(), 1, "{hist_a}");
+    assert_eq!(admin.ok(&["history", "b"]).lines().count(), 2);
+
+    // add --checksums.
+    let debs = d.join("debs");
+    std::fs::create_dir_all(&debs).unwrap();
+    let deb = build_deb(&debs, "pkg", "1.0");
+    let sha = {
+        let out = Command::new("sha256sum").arg(&deb).output().unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .to_string()
+    };
+    let deb = deb.display().to_string();
+    let sums = d.join("SHA256SUMS");
+    std::fs::write(&sums, format!("{}  other.deb\n", "0".repeat(64))).unwrap();
+    let s = sums.display().to_string();
+    assert!(
+        ci.fails(
+            &[
+                "add",
+                "a",
+                "main",
+                &deb,
+                "-d",
+                "noble",
+                "--checksums",
+                &s,
+                "-y"
+            ],
+            2
+        )
+        .contains("not in the checksums")
+    );
+    std::fs::write(&sums, format!("{}  pkg_1.0_amd64.deb\n", "0".repeat(64))).unwrap();
+    assert!(
+        ci.fails(
+            &[
+                "add",
+                "a",
+                "main",
+                &deb,
+                "-d",
+                "noble",
+                "--checksums",
+                &s,
+                "-y"
+            ],
+            4
+        )
+        .contains("does not match")
+    );
+    std::fs::write(&sums, format!("{sha}  pkg_1.0_amd64.deb\n")).unwrap();
+    ci.ok(&[
+        "add",
+        "a",
+        "main",
+        &deb,
+        "-d",
+        "noble",
+        "--checksums",
+        &s,
+        "-y",
+    ]);
+
+    // The follower saw the jobs as they ran.
+    let mut seen = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !seen.iter().any(|l: &String| l.contains("done add"))
+        && std::time::Instant::now() < deadline
+    {
+        if let Ok(l) = events.recv_timeout(Duration::from_millis(200)) {
+            seen.push(l);
+        }
+    }
+    let all = seen.join("\n");
+    assert!(
+        all.contains("running import") && all.contains("done import"),
+        "{all}"
+    );
+    assert!(all.contains("done add publish:a ci"), "{all}");
+
+    // Stopping does not wait for the follower, which then ends.
+    assert!(srv.stop().success());
+    let mut ended = false;
+    for _ in 0..50 {
+        if follower.try_wait().unwrap().is_some() {
+            ended = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _ = follower.kill();
+    assert!(ended, "the follower did not end with the server");
 }

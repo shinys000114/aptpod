@@ -235,6 +235,13 @@ impl AuthDb {
         )? > 0)
     }
 
+    pub fn admin_count(&self) -> R<i64> {
+        self.conn()
+            .query_row("SELECT count(*) FROM users WHERE role = 'admin'", [], |r| {
+                r.get(0)
+            })
+    }
+
     /// Checks a password; slow on purpose (argon2), call off the async
     /// runtime.
     pub fn check_password(&self, name: &str, password: &str) -> R<Option<User>> {

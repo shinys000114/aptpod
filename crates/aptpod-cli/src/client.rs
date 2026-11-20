@@ -137,6 +137,34 @@ impl Client {
         Ok(())
     }
 
+    /// Job events from `/api/v1/events` (server-sent events), until the
+    /// server ends the stream.
+    pub fn events(&self) -> Result<impl Iterator<Item = Result<Value, CliError>>, CliError> {
+        use std::io::BufRead;
+        let resp = self
+            .req(Method::GET, "/api/v1/events")
+            .header(reqwest::header::ACCEPT, "text/event-stream")
+            .send()
+            .map_err(|e| CliError::other(format!("{}: {}", self.base, chain(&e))))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let v: Value = resp
+                .json()
+                .unwrap_or(json!({ "error": status.to_string() }));
+            return Err(CliError {
+                kind: v["kind"].as_str().unwrap_or("other").to_string(),
+                message: v["error"].as_str().unwrap_or("request failed").to_string(),
+            });
+        }
+        let lines = std::io::BufReader::new(resp).lines();
+        Ok(lines.filter_map(|l| match l {
+            Err(e) => Some(Err(CliError::other(format!("event stream: {e}")))),
+            Ok(l) => l.strip_prefix("data:").map(|d| {
+                serde_json::from_str(d.trim()).map_err(|e| CliError::other(e.to_string()))
+            }),
+        }))
+    }
+
     /// Streams a file to `/api/v1/uploads`.
     pub fn upload(&self, file: &Path) -> Result<Value, CliError> {
         let f = fs::File::open(file)

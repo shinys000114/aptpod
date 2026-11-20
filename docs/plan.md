@@ -293,12 +293,22 @@ staged sources, `--prune`/`retire`, `--no-snapshot`/`pre-*` labels, aptly
   unauthorized/forbidden 401/403 (7), not found 404 (1), stale 409 (3),
   conflict 409 (4), blocked 409 (5), unsynced 500 (6); usage errors exit 2.
 
-Progress: P3a+b thin slice done - config, lock, users/tokens/roles, writer,
-job log, uploads, publish create, add with preview/apply, packages listing,
-`aptpod login/logout/whoami/publish ls|show|create/add/ls/jobs`, and an
-end-to-end test of the real server and CLI. Next: rm, promote,
-prune-versions, snapshots, diff, rollback, layout edits and delete, gc and
-repair endpoints, SSE job logs, TOML import/export, `--checksums`.
+Progress: P3a done - config, lock, users/tokens/roles, writer, job log,
+uploads, publish create, add with preview/apply, packages listing. P3b
+done - rm, promote (components, dists, publishes), prune-versions,
+rollback, layout set/edit (TOML via file, stdin or $EDITOR), publish
+delete, history, diff, snapshots (create, drop, prune), find, gc (history
+expiry + unreferenced packages) and repair, each with its CLI command;
+`rm`/`promote` refuse an empty selection without `--all`. Both are covered
+by end-to-end tests of the real server and CLI. P3c/d done - users and tokens through the API (`aptpod token`, `aptpod
+user`, `aptpod passwd`; the last admin cannot be removed or demoted),
+`add --checksums` (sha256sum file or URL, checked against the server's
+hash of each upload), `aptpod config export/import` (all publish layouts
+as `[publishes.<alias>]` TOML, imported as one plan; publishes missing from
+the file are left alone, unchanged ones get no revision), job events over
+SSE (`GET /api/v1/events`, `aptpod jobs --follow`; streams end on
+shutdown), README quick start. Remaining for P3: a systemd/.deb install
+test, and signing through `[signing]` end to end.
 
 Open points: previews also run on the writer (they ingest uploads), so P4
 mirror syncs must not hold it for long stretches (download outside the

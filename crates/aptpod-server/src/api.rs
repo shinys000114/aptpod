@@ -34,16 +34,18 @@ pub struct AppState {
     /// Bounds concurrent password checks (argon2 is slow and memory hungry
     /// on purpose, and `/login` is unauthenticated).
     pub logins: tokio::sync::Semaphore,
+    pub events: tokio::sync::broadcast::Sender<crate::events::JobEvent>,
+    /// Set when shutting down; ends event streams so connections close.
+    pub stopping: tokio::sync::watch::Sender<bool>,
 }
 
-type St = State<Arc<AppState>>;
+pub(crate) type St = State<Arc<AppState>>;
 
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/v1/login", post(login))
         .route("/api/v1/token", delete(logout))
         .route("/api/v1/whoami", get(whoami))
-        .route("/api/v1/tokens", get(tokens))
         .route("/api/v1/tokens/{id}", delete(revoke_token))
         .route(
             "/api/v1/uploads",
@@ -54,6 +56,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/publishes/{alias}/packages", get(packages))
         .route("/api/v1/publishes/{alias}/add", post(add))
         .route("/api/v1/jobs", get(jobs))
+        .route("/api/v1/events", get(crate::events::events))
+        .merge(crate::ops::routes())
+        .merge(crate::users::routes())
         .fallback(|| async {
             ApiError::new(StatusCode::NOT_FOUND, "not_found", "no such endpoint")
         })
@@ -71,17 +76,17 @@ pub struct ApiError {
 }
 
 impl ApiError {
-    fn new(status: StatusCode, kind: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(status: StatusCode, kind: &'static str, message: impl Into<String>) -> Self {
         Self {
             status,
             kind,
             message: message.into(),
         }
     }
-    fn invalid(message: impl Into<String>) -> Self {
+    pub(crate) fn invalid(message: impl Into<String>) -> Self {
         Self::new(StatusCode::BAD_REQUEST, "invalid", message)
     }
-    fn internal(message: impl std::fmt::Display) -> Self {
+    pub(crate) fn internal(message: impl std::fmt::Display) -> Self {
         tracing::error!("{message}");
         Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -144,11 +149,11 @@ impl From<Stopped> for ApiError {
     }
 }
 
-fn join_err(e: tokio::task::JoinError) -> ApiError {
+pub(crate) fn join_err(e: tokio::task::JoinError) -> ApiError {
     ApiError::internal(format!("task failed: {e}"))
 }
 
-type Res<T> = Result<Json<T>, ApiError>;
+pub(crate) type Res<T> = Result<Json<T>, ApiError>;
 
 // ---- authentication -----------------------------------------------------
 
@@ -159,7 +164,7 @@ pub struct Caller {
 }
 
 impl Caller {
-    fn need(&self, role: Role) -> Result<(), ApiError> {
+    pub(crate) fn need(&self, role: Role) -> Result<(), ApiError> {
         if self.user.role >= role {
             Ok(())
         } else {
@@ -236,11 +241,6 @@ async fn logout(State(st): St, caller: Caller) -> Res<serde_json::Value> {
 
 async fn whoami(caller: Caller) -> Res<User> {
     Ok(Json(caller.user))
-}
-
-/// The caller's own tokens.
-async fn tokens(State(st): St, caller: Caller) -> Res<Vec<crate::authdb::TokenInfo>> {
-    Ok(Json(st.auth.tokens(caller.user.id)?))
 }
 
 async fn revoke_token(
@@ -328,7 +328,7 @@ fn upload_path(st: &AppState, id: &str) -> Result<PathBuf, ApiError> {
 // ---- queries ------------------------------------------------------------
 
 /// Runs a query on the read handle, off the async runtime.
-async fn read<T, F>(st: &Arc<AppState>, f: F) -> Result<T, ApiError>
+pub(crate) async fn read<T, F>(st: &Arc<AppState>, f: F) -> Result<T, ApiError>
 where
     T: Send + 'static,
     F: FnOnce(&Repo) -> Result<T, RepoError> + Send + 'static,
@@ -380,7 +380,7 @@ struct PackagesQuery {
     arch: Option<String>,
 }
 
-fn csv(s: &Option<String>) -> Option<Vec<String>> {
+pub(crate) fn csv(s: &Option<String>) -> Option<Vec<String>> {
     s.as_ref().map(|s| {
         s.split(',')
             .map(str::trim)
@@ -432,14 +432,14 @@ async fn jobs(
 /// type: serde's `flatten` would accept unknown fields, and a typo such as
 /// `aply` must not quietly turn an apply into a preview).
 #[derive(Debug, Default)]
-struct Commit {
+pub(crate) struct Commit {
     /// Apply instead of only previewing.
-    apply: bool,
+    pub(crate) apply: bool,
     /// `bases` of the preview the user accepted.
-    expect: Bases,
+    pub(crate) expect: Bases,
 }
 
-type Bases = Option<Vec<(String, Option<i64>)>>;
+pub(crate) type Bases = Option<Vec<(String, Option<i64>)>>;
 
 #[derive(Serialize)]
 struct ChangeView {
@@ -478,7 +478,7 @@ impl PlanView {
 }
 
 #[derive(Serialize)]
-struct Outcome {
+pub(crate) struct Outcome {
     plan: PlanView,
     #[serde(skip_serializing_if = "Option::is_none")]
     applied: Option<Applied>,
@@ -488,7 +488,7 @@ struct Outcome {
 
 /// Computes a plan on the writer and, if asked, applies it there in the
 /// same job, so nothing can move the heads in between.
-async fn plan_job<F>(
+pub(crate) async fn plan_job<F>(
     st: &Arc<AppState>,
     caller: &Caller,
     kind: &'static str,
@@ -530,7 +530,8 @@ where
                     job: None,
                 });
             }
-            let job = st2.auth.job_start(kind, &resource, &user)?;
+            let job = st2.job_start(kind, &resource, &user)?;
+            let job_id = job.id();
             let res = repo.apply(&plan, &user);
             let summary = match &res {
                 Ok(a) => Ok(format!(
@@ -544,18 +545,18 @@ where
                 )),
                 Err(e) => Err(e.to_string()),
             };
-            st2.auth.job_finish(job, summary.as_deref().map_err(String::as_str))?;
+            job.finish(summary.as_deref().map_err(String::as_str))?;
             if matches!(res, Ok(_) | Err(RepoError::Unsynced(_))) {
                 // Committed: the store has the files now.
                 for p in &uploads {
                     let _ = std::fs::remove_file(p);
                 }
             }
-            tracing::info!(%user, kind, %resource, job, ok = res.is_ok(), "apply");
+            tracing::info!(%user, kind, %resource, job = job_id, ok = res.is_ok(), "apply");
             Ok(Outcome {
                 plan: view,
                 applied: Some(res?),
-                job: Some(job),
+                job: Some(job_id),
             })
         })
         .await??;
@@ -570,9 +571,9 @@ struct CreateReq {
     #[serde(default)]
     adopt: bool,
     #[serde(default)]
-    apply: bool,
+    pub(crate) apply: bool,
     #[serde(default)]
-    expect: Bases,
+    pub(crate) expect: Bases,
 }
 
 async fn create_publish(State(st): St, caller: Caller, Json(req): Json<CreateReq>) -> Res<Outcome> {
@@ -617,9 +618,9 @@ struct AddReq {
     #[serde(default)]
     names: Vec<String>,
     #[serde(default)]
-    apply: bool,
+    pub(crate) apply: bool,
     #[serde(default)]
-    expect: Bases,
+    pub(crate) expect: Bases,
 }
 
 async fn add(
