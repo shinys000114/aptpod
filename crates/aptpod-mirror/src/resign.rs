@@ -36,8 +36,8 @@ pub struct ResignMirror {
     pub source: HttpMirror,
     /// Root of the published tree.
     pub path: PathBuf,
-    /// Only packages matching (name globs with optional versions); `None`
-    /// takes all.
+    /// Only packages matching (name globs, `glob=version`); `None` takes
+    /// all.
     pub include: Option<Filter>,
     /// Packages to leave out.
     pub exclude: Option<Filter>,
@@ -373,6 +373,16 @@ fn read_dist(m: &ResignMirror, ctx: &Ctx, dist: &str) -> Result<UpDist, DistErr>
     let base = join_url(&src.url, &format!("dists/{dist}")) + "/";
     let (rel, _) = release_of(src, ctx, &base)?;
     let (archs, groups) = index_groups(src, &rel)?;
+    // Names a publish cannot have (e.g. `updates/main`) fail this dist only.
+    if let Some((dir, _, _)) = groups.iter().find(|(dir, _, _)| {
+        let comp = dir.split("/binary-").next().unwrap_or(dir);
+        !aptpod_repo::layout::valid_name(comp)
+    }) {
+        let comp = dir.split("/binary-").next().unwrap_or(dir);
+        return Err(DistErr::Fatal(format!(
+            "component {comp:?} cannot be published (no / in names); select components"
+        )));
+    }
     // The best variant listed per group: (group index, path, ext).
     let mut want: Vec<(usize, Vec<(String, &str)>)> = Vec::new();
     for (i, (dir, base_name, _)) in groups.iter().enumerate() {
@@ -416,7 +426,7 @@ fn read_dist(m: &ResignMirror, ctx: &Ctx, dist: &str) -> Result<UpDist, DistErr>
     let mut seen: BTreeMap<String, BTreeMap<String, PackageEntry>> = BTreeMap::new();
     for ((i, _), r) in want.iter().zip(got) {
         let (dir, base_name, required) = &groups[*i];
-        let comp = dir.split('/').next().unwrap_or(dir).to_string();
+        let comp = dir.split("/binary-").next().unwrap_or(dir).to_string();
         if !comps.iter().any(|(c, _)| *c == comp) {
             comps.push((comp.clone(), Vec::new()));
         }

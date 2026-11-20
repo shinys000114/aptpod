@@ -309,8 +309,9 @@ pub(crate) async fn sync(
     caller.need(Role::Publisher)?;
     let def = st.auth.mirror(&name)?.ok_or_else(|| not_found(&name))?;
     let req = body.map(|b| b.0).unwrap_or_default();
-    // Deleting what an admin left in place (prune off) is an admin call.
-    if req.prune && !def.prune {
+    // Deleting what an admin left in place (prune off), or letting a
+    // re-signed mirror remove more than max_delete, is an admin call.
+    if req.prune && (!def.prune || def.kind == Kind::Resign) {
         caller.need(Role::Admin)?;
     }
     let opts = SyncOpts {

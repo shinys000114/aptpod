@@ -58,7 +58,8 @@ fn is_zero(n: &u32) -> bool {
 /// A (dist, component) pair.
 pub type Cell = (String, String);
 
-fn valid_name(s: &str) -> bool {
+/// A dist, component or architecture name aptpod can publish.
+pub fn valid_name(s: &str) -> bool {
     !s.is_empty()
         && !s.starts_with('.')
         && s.chars()

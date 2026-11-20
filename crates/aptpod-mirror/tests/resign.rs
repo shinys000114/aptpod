@@ -37,7 +37,7 @@ impl Target for RepoTarget {
             .collect())
     }
     fn apply(&self, s: MirrorSync) -> Result<MirrorReport, Error> {
-        Ok(self.0.lock().unwrap().sync_mirror("lf", &s, "test")?)
+        Ok(self.0.lock().unwrap().sync_mirror("rs", &s, "test")?)
     }
 }
 
@@ -86,7 +86,7 @@ impl Env {
         let store = Store::new(self.data.path().join("data/store"));
         let ctx = ResignCtx {
             http: &self.http,
-            state_dir: &self.data.path().join("data/mirrors/lf"),
+            state_dir: &self.data.path().join("data/mirrors/rs"),
             store: &store,
             cancel,
             log: &log,
@@ -102,7 +102,7 @@ impl Env {
     fn contents(&self) -> Vec<String> {
         let repo = self.target.0.lock().unwrap();
         let mut v: Vec<String> = repo
-            .list("lf", None, None, &Filter::all())
+            .list("rs", None, None, &Filter::all())
             .unwrap()
             .into_iter()
             .map(|r| {
@@ -118,7 +118,7 @@ impl Env {
 
     fn sync_labels(&self) -> Vec<String> {
         let repo = self.target.0.lock().unwrap();
-        repo.snapshots("lf")
+        repo.snapshots("rs")
             .unwrap()
             .into_iter()
             .map(|s| s.label)
@@ -165,7 +165,7 @@ fn follows_upstream_signed_with_our_key() {
     );
     {
         let repo = env.target.0.lock().unwrap();
-        let l = repo.layout("lf").unwrap();
+        let l = repo.layout("rs").unwrap();
         assert_eq!(l.dists, ["one", "two"]);
         assert_eq!(l.components, ["main", "extra"]);
         assert_eq!(l.only.get("extra").unwrap(), &["one".to_string()]);
@@ -220,7 +220,7 @@ fn changes_are_snapshots_and_a_sync_undoes_a_rollback() {
     {
         let mut repo = env.target.0.lock().unwrap();
         let plan = repo
-            .plan_rollback("lf", &RevRef::Label(first.clone()))
+            .plan_rollback("rs", &RevRef::Label(first.clone()))
             .unwrap();
         repo.apply(&plan, "test").unwrap();
     }
@@ -260,6 +260,16 @@ fn filters_and_lying_indices() {
     assert!(r.ok(), "{r:?}");
     assert_eq!((r.packages, r.filtered, r.downloaded), (1, 2, 1));
     assert_eq!(env.contents(), ["one/main alpha=1.0 amd64"]);
+    // `glob=version` selects one version.
+    let mut exact = env.mirror(&["one"]);
+    exact.include = Some(Filter::new(&["beta=2.0"], None, None).unwrap());
+    let r = env.run(&exact);
+    assert!(
+        r.publish.unwrap().removed == 1 && env.contents().is_empty(),
+        "{:?}",
+        env.contents()
+    );
+    env.run(&m);
 
     // An index stanza that names another package than its file is: the
     // dist fails and keeps what it had.

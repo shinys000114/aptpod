@@ -597,6 +597,11 @@ selected through `extras` costs that much memory.
 
 ## P5 notes (web UI)
 
+Exposure on the reference host (decided 2026-11-20): the web UI and API
+are reachable over the WireGuard network only, not from the internet.
+Login attempts are therefore not rate limited yet; that comes first if
+it is ever published.
+
 Server-rendered pages (askama, HTML-escaped by default, no `|safe`) with
 htmx 2.0.11 vendored (served from the binary, eval, script tags and
 injected styles off, CSP `script-src 'self'`). Sessions: cookies stored
@@ -640,8 +645,8 @@ under `publish_roots` (the tree is a publish). Definitions need
 `[signing]` in server.toml. Fields: url, path, dists, components and
 architectures (empty: what the upstream lists), keyring, ignore_missing,
 parallel, retries, max_delete, schedule, enabled, plus `packages` /
-`exclude_packages` (the filter syntax of `rm`/`find`: globs,
-`name=version`, version conditions), `origin` / `label` (default: the
+`exclude_packages` (name globs or `glob=version`, as `rm`/`find`
+take them), `origin` / `label` (default: the
 upstream's) and `keep_snapshots` (default 10). udebs, sources and extras
 are not supported.
 
@@ -666,7 +671,10 @@ out if never published). Pool paths are shared per component: the first
 dist that lists a path decides its content, a later dist with other
 content fails; a kept dist whose pool file got new content follows it
 (as `--replace` does). More removals than `max_delete` refuse the whole
-sync (`sync --prune` allows it once). A change gets the label
+sync (`sync --prune`, admin only, allows it once). Dist, component and
+architecture names must be publishable (no `/`): checked when the
+definition is saved, and an upstream component such as `updates/main`
+fails its dist (select components). A change gets the label
 `sync-<UTC time>`; older sync labels beyond `keep_snapshots` are
 dropped, the publish keeps no unlabelled history (`history_max_age = 0`),
 and a gc runs after labels were dropped (gc is repository-wide; packages
@@ -680,10 +688,18 @@ the upstream (logged as a warning) - disable the mirror to hold a
 rollback. `config export` leaves the publish out (the mirror makes it),
 `config import` refuses it. A publish of the same name that exists
 already needs `adopt` to be taken over; a re-signed mirror cannot turn
-into a verbatim one. Deleting the mirror leaves an ordinary publish.
+into a verbatim one. Deleting the mirror leaves an ordinary publish
+(still with `history_max_age = 0`: set a value in its layout to keep
+unlabelled history).
 
-Differences from the upstream that clients see: our signature, Date and
-Valid-Until; `Suite` and `Codename` are the dist name (the reference
+Open points: a downloaded file that fails the control check stays in
+the store without a row (gc only removes files of rows; removing it
+then could race an `add` of the same file); a sync that removes every
+package of a large upstream at once is refused by the brake, not by a
+percentage.
+
+Differences from the upstream that clients see: our signature and Date;
+`Suite` and `Codename` are the dist name (the reference
 upstream says `Suite: stable` in every dist; a per-dist suite is not
 modelled yet), stanzas as aptpod writes them (control fields of the
 file, then Filename, Size and hashes; fields an upstream adds to its

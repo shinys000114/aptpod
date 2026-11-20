@@ -122,8 +122,8 @@ pub struct MirrorDef {
     /// rsync: I/O timeout in seconds (default 900).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub io_timeout: Option<u32>,
-    /// resign: only these packages (name globs, optionally `name=version`
-    /// or with a version condition); empty: all.
+    /// resign: only these packages (name globs, or `glob=version`); empty:
+    /// all.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub packages: Vec<String>,
     /// resign: packages to leave out.
@@ -193,6 +193,17 @@ impl MirrorDef {
         }
         if self.dists.is_empty() {
             return Err("dists is empty".into());
+        }
+        if let Some(d) = self
+            .dists
+            .iter()
+            .chain(&self.components)
+            .chain(&self.architectures)
+            .find(|d| !aptpod_repo::layout::valid_name(d))
+        {
+            return Err(format!(
+                "{d:?} cannot be published (letters, digits and +-._~; no /)"
+            ));
         }
         let filter = |specs: &[String]| -> Result<Option<aptpod_repo::Filter>, String> {
             if specs.is_empty() {

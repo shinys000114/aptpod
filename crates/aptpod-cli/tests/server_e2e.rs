@@ -1710,6 +1710,8 @@ fn resign_mirrors() {
     );
     let out = ci.ok(&["mirror", "sync", "rs", "--wait"]);
     assert!(out.contains("publish unchanged"), "{out}");
+    // Overriding the removal brake is an admin call.
+    ci.fails(&["mirror", "sync", "rs", "--prune"], 7);
 
     // Filled by the mirror: manual changes are refused (managed, exit 4).
     let debs = d.join("debs");
