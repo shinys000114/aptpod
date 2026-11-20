@@ -1,7 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Error · aptpod{% endblock %}
 {% block main %}
-<h1>Error</h1>
+<div class="page-head"><div class="title"><h1>Error</h1></div></div>
+<div class="card"><div class="card-body">
 <p class="error">{{ message }}</p>
 <p><a href="{{ s.base }}">Back to the overview</a></p>
+</div></div>
 {% endblock %}

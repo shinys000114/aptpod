@@ -1,14 +1,14 @@
-{% for e in errors %}<p class="error">{{ e }}</p>{% endfor %}
-<table>
-  <thead><tr><th>User</th><th>Role</th><th></th></tr></thead>
+{% for e in errors %}<p class="error card-body">{{ e }}</p>{% endfor %}
+<div class="table-wrap"><table>
+  <thead><tr><th>User</th><th>Role and password</th><th></th></tr></thead>
   <tbody>
   {% for u in users %}
-  <tr><td>{{ u.name }}</td>
+  <tr><td><b>{{ u.name }}</b></td>
     <td><form class="inline" hx-post="{{ base }}admin/users/{{ u.name }}" hx-target="#users">
-      <select name="role">{% for r in ["reader", "publisher", "admin"] %}<option{% if *r == u.role %} selected{% endif %}>{{ r }}</option>{% endfor %}</select>
-      <input name="password" type="password" placeholder="new password (optional)" autocomplete="new-password">
+      <select name="role" aria-label="role">{% for r in ["reader", "publisher", "admin"] %}<option{% if *r == u.role %} selected{% endif %}>{{ r }}</option>{% endfor %}</select>
+      <input name="password" type="password" placeholder="new password (optional)" autocomplete="new-password" aria-label="new password">
       <button type="submit">Save</button></form></td>
-    <td><button class="link danger" hx-post="{{ base }}admin/users/{{ u.name }}/delete" hx-target="#users" hx-confirm="Remove user {{ u.name }}?">remove</button></td></tr>
+    <td class="acts"><button class="link danger" hx-post="{{ base }}admin/users/{{ u.name }}/delete" hx-target="#users" hx-confirm="Remove user {{ u.name }}?">remove</button></td></tr>
   {% endfor %}
   </tbody>
-</table>
+</table></div>

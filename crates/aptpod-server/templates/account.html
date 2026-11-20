@@ -1,20 +1,26 @@
 {% extends "base.html" %}
 {% block title %}Account · aptpod{% endblock %}
 {% block main %}
-<h1>{{ s.user }} <span class="tag">{{ s.role }}</span></h1>
-
-<h2>API tokens</h2>
-<form class="action" hx-post="{{ s.base }}account/tokens" hx-target="#tokens">
-  <input name="name" placeholder="token name (e.g. jenkins)" required>
-  <button type="submit">Create token</button>
-</form>
-<div id="tokens">{% include "tokens.html" %}</div>
-
-<h2>Password</h2>
-<form class="action" hx-post="{{ s.base }}account/password" hx-target="#password-result">
-  <input name="current" type="password" placeholder="current password" autocomplete="current-password" required>
-  <input name="new" type="password" placeholder="new password" autocomplete="new-password" required minlength="8">
-  <button type="submit">Change</button>
-</form>
-<div id="password-result"></div>
+<div class="page-head"><div class="title"><h1>{{ s.user }} <span class="tag">{{ s.role }}</span></h1><p class="sub">Your API tokens and password.</p></div></div>
+<div class="card">
+  <div class="card-head"><h2>API tokens</h2><span class="hint">for the CLI and CI (APTPOD_TOKEN); shown once when created</span></div>
+  <form class="toolbar" hx-post="{{ s.base }}account/tokens" hx-target="#tokens">
+    <input name="name" placeholder="token name, e.g. jenkins" required aria-label="token name">
+    <button type="submit">Create token</button>
+  </form>
+  <div id="tokens">{% include "tokens.html" %}</div>
+</div>
+<div class="card">
+  <div class="card-head"><h2>Password</h2><span class="hint">changing it ends your web sessions; API tokens stay</span></div>
+  <div class="card-body">
+  <form hx-post="{{ s.base }}account/password" hx-target="#password-result">
+    <div class="fields">
+      <label class="field"><span>Current password</span><input name="current" type="password" autocomplete="current-password" required></label>
+      <label class="field"><span>New password</span><input name="new" type="password" autocomplete="new-password" required minlength="8"></label>
+    </div>
+    <div class="form-foot"><span class="spacer"></span><button type="submit">Change password</button></div>
+  </form>
+  <div id="password-result"></div>
+  </div>
+</div>
 {% endblock %}

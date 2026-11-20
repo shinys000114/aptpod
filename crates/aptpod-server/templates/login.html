@@ -1,12 +1,13 @@
 {% extends "base.html" %}
 {% block title %}Log in · aptpod{% endblock %}
-{% block main %}
+{% block anon %}
 <form class="login" method="post" action="{{ s.base }}login">
+  <span class="brand"><span class="logo">a</span>aptpod</span>
   <h1>Log in</h1>
   {% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}
   <input type="hidden" name="csrf" value="{{ login_csrf }}">
-  <label>User <input name="user" autocomplete="username" required autofocus></label>
-  <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+  <label class="field"><span>User</span><input name="user" autocomplete="username" required autofocus></label>
+  <label class="field"><span>Password</span><input name="password" type="password" autocomplete="current-password" required></label>
   <button type="submit">Log in</button>
 </form>
 {% endblock %}

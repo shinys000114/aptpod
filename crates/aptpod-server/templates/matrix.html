@@ -1,8 +1,8 @@
-<table class="matrix">
+<div class="table-wrap"><table class="matrix">
   <thead><tr><th></th>{% for c in components %}<th>{{ c }}</th>{% endfor %}</tr></thead>
   <tbody>
   {% for row in matrix %}
-  <tr><th>{{ row.dist }}</th>{% for n in row.counts %}<td class="num">{{ n }}</td>{% endfor %}</tr>
+  <tr><th>{{ row.dist }}</th>{% for n in row.counts %}<td>{% if n == "–" %}<span class="count none">–</span>{% else if n == "0" %}<span class="count zero">0</span>{% else %}<span class="count">{{ n }}</span>{% endif %}</td>{% endfor %}</tr>
   {% endfor %}
   </tbody>
-</table>
+</table></div>

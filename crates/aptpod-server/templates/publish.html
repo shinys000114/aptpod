@@ -1,95 +1,130 @@
 {% extends "base.html" %}
 {% block title %}{{ alias }} · aptpod{% endblock %}
 {% block main %}
-<h1>{{ alias }} {% if managed %}<span class="tag">config file</span>{% endif %}{% if let Some(m) = mirror %}<span class="tag">mirror</span>{% endif %}</h1>
-<p class="mono">{{ path }}</p>
+<div class="page-head">
+  <div class="title">
+    <h1>{{ alias }}{% if managed %} <span class="tag">config file</span>{% endif %}{% if mirror.is_some() %} <span class="tag accent">mirror</span>{% endif %}</h1>
+    <p class="sub mono">{{ path }}</p>
+  </div>
+</div>
 {% if let Some(m) = mirror %}
-<p class="muted">Filled by the re-signed mirror <a href="{{ s.base }}mirrors/{{ m }}">{{ m }}</a>: every sync brings it to the upstream state (a snapshot each time). Snapshots and rollback work until the next sync.</p>
+<div class="callout">Filled by the re-signed mirror <a href="{{ s.base }}mirrors/{{ m }}">{{ m }}</a>: every sync brings it to the upstream state (a snapshot each time). Snapshots and rollback work until the next sync.</div>
 {% endif %}
 
-<h2>Cells</h2>
-<div id="matrix" hx-get="{{ s.base }}p/{{ alias }}/matrix" hx-trigger="packages-changed from:body">
-{% include "matrix.html" %}
+<div class="card">
+  <div class="card-head"><h2>Cells</h2><span class="hint">packages per dist and component</span></div>
+  <div id="matrix" hx-get="{{ s.base }}p/{{ alias }}/matrix" hx-trigger="packages-changed from:body">
+  {% include "matrix.html" %}
+  </div>
 </div>
 
-<h2>Packages</h2>
-<form class="filter" hx-get="{{ s.base }}p/{{ alias }}/packages" hx-target="#packages" hx-trigger="input changed delay:300ms, submit">
-  <input name="q" placeholder="name, name=version, glob">
-  <select name="dist"><option value="">all dists</option>{% for d in dists %}<option>{{ d }}</option>{% endfor %}</select>
-  <select name="component"><option value="">all components</option>{% for c in components %}<option>{{ c }}</option>{% endfor %}</select>
-</form>
-<div id="packages" hx-get="{{ s.base }}p/{{ alias }}/packages" hx-trigger="load, packages-changed from:body" hx-include="form.filter">
+<div class="card">
+  <div class="card-head"><h2>Packages</h2></div>
+  <form class="filter toolbar" hx-get="{{ s.base }}p/{{ alias }}/packages" hx-target="#packages" hx-trigger="input changed delay:300ms, submit">
+    <input name="q" placeholder="Search: name, name=version or glob" aria-label="search">
+    <select name="dist" aria-label="dist"><option value="">All dists</option>{% for d in dists %}<option>{{ d }}</option>{% endfor %}</select>
+    <select name="component" aria-label="component"><option value="">All components</option>{% for c in components %}<option>{{ c }}</option>{% endfor %}</select>
+  </form>
+  <div id="packages" hx-get="{{ s.base }}p/{{ alias }}/packages" hx-trigger="load, packages-changed from:body" hx-include="form.filter">
+  </div>
 </div>
 
 {% if can_publish && mirror.is_none() %}
-<h2>Add packages</h2>
-<form class="action" hx-post="{{ s.base }}p/{{ alias }}/add" hx-encoding="multipart/form-data" hx-target="#add-result">
-  <select name="component">{% for c in components %}<option>{{ c }}</option>{% endfor %}</select>
-  <input name="dists" placeholder="dists: detect (default), all, or a list" size="30">
-  <label class="check"><input type="checkbox" name="replace" value="1"> replace</label>
-  <input type="file" name="file" accept=".deb" multiple required>
-  <button type="submit">Upload and preview</button>
-</form>
-<div id="add-result"></div>
-
-<h2>Promote</h2>
-<form class="action" hx-post="{{ s.base }}p/{{ alias }}/promote" hx-target="#promote-result">
-  <select name="component">{% for c in components %}<option>{{ c }}</option>{% endfor %}</select>
-  <input name="packages" placeholder="patterns" required>
-  <input name="dists" placeholder="from dists (default: all)">
-  <select name="to_publish">{% for p in publishes %}<option{% if *p == *alias %} selected{% endif %}>{{ p }}</option>{% endfor %}</select>
-  <input name="to_component" placeholder="to component (same)">
-  <input name="to_dist" placeholder="to dist">
-  <label class="check"><input type="checkbox" name="all_versions" value="1"> all versions</label>
-  <label class="check"><input type="checkbox" name="move" value="1"> move</label>
-  <button type="submit">Preview</button>
-</form>
-<div id="promote-result"></div>
-
-<h2>Remove packages</h2>
-<form class="action" hx-post="{{ s.base }}p/{{ alias }}/rm" hx-target="#rm-result">
-  <select name="component">{% for c in components %}<option>{{ c }}</option>{% endfor %}</select>
-  <input name="packages" placeholder="patterns, space separated">
-  <input name="dists" placeholder="dists (default: all)">
-  <input name="keep" placeholder="keep newest N" size="12">
-  <button type="submit">Preview</button>
-</form>
-<div id="rm-result"></div>
+<div class="card">
+  <div class="card-head"><h2>Change packages</h2><span class="hint">every change is previewed, then applied</span></div>
+  <details class="panel" open>
+    <summary>Add packages <span class="hint">upload .deb files</span></summary>
+    <div class="panel-body">
+    <form hx-post="{{ s.base }}p/{{ alias }}/add" hx-encoding="multipart/form-data" hx-target="#add-result">
+      <div class="fields">
+        <label class="field"><span>Component</span><select name="component">{% for c in components %}<option>{{ c }}</option>{% endfor %}</select></label>
+        <label class="field"><span>Dists</span><input name="dists" placeholder="detect (default), all, or a list"></label>
+        <label class="field wide"><span>Files</span><input type="file" name="file" accept=".deb" multiple required></label>
+      </div>
+      <div class="form-foot"><label class="check"><input type="checkbox" name="replace" value="1"> replace different content of the same version</label><span class="spacer"></span>
+      <button type="submit">Upload and preview</button></div>
+    </form>
+    <div id="add-result"></div>
+    </div>
+  </details>
+  <details class="panel">
+    <summary>Promote <span class="hint">copy or move to another dist, component or publish</span></summary>
+    <div class="panel-body">
+    <form hx-post="{{ s.base }}p/{{ alias }}/promote" hx-target="#promote-result">
+      <div class="fields">
+        <label class="field"><span>Component</span><select name="component">{% for c in components %}<option>{{ c }}</option>{% endfor %}</select></label>
+        <label class="field"><span>Packages</span><input name="packages" placeholder="patterns" required></label>
+        <label class="field"><span>From dists</span><input name="dists" placeholder="all"></label>
+        <label class="field"><span>To publish</span><select name="to_publish">{% for p in publishes %}<option{% if *p == *alias %} selected{% endif %}>{{ p }}</option>{% endfor %}</select></label>
+        <label class="field"><span>To component</span><input name="to_component" placeholder="same"></label>
+        <label class="field"><span>To dist</span><input name="to_dist" placeholder="same"></label>
+      </div>
+      <div class="form-foot">
+        <label class="check"><input type="checkbox" name="all_versions" value="1"> all versions</label>
+        <label class="check"><input type="checkbox" name="move" value="1"> move (remove from the source)</label>
+        <span class="spacer"></span><button type="submit">Preview</button></div>
+    </form>
+    <div id="promote-result"></div>
+    </div>
+  </details>
+  <details class="panel">
+    <summary>Remove packages <span class="hint">by pattern, or keep the newest N</span></summary>
+    <div class="panel-body">
+    <form hx-post="{{ s.base }}p/{{ alias }}/rm" hx-target="#rm-result">
+      <div class="fields">
+        <label class="field"><span>Component</span><select name="component">{% for c in components %}<option>{{ c }}</option>{% endfor %}</select></label>
+        <label class="field"><span>Packages</span><input name="packages" placeholder="patterns, space separated"></label>
+        <label class="field"><span>Dists</span><input name="dists" placeholder="all"></label>
+        <label class="field"><span>Keep newest</span><input name="keep" placeholder="N" inputmode="numeric"></label>
+      </div>
+      <div class="form-foot"><span class="spacer"></span><button type="submit">Preview</button></div>
+    </form>
+    <div id="rm-result"></div>
+    </div>
+  </details>
+</div>
 {% endif %}
 
-<h2>Snapshots</h2>
-{% if can_publish %}
-<form class="action" hx-post="{{ s.base }}p/{{ alias }}/snapshots" hx-target="#snapshots">
-  <input name="label" placeholder="label" required pattern="[A-Za-z0-9._-]+">
-  <input name="description" placeholder="description" size="40">
-  <button type="submit">Label HEAD</button>
-</form>
-{% endif %}
-<div id="snapshots" hx-get="{{ s.base }}p/{{ alias }}/snapshots" hx-trigger="load, packages-changed from:body"></div>
+<div class="card">
+  <div class="card-head"><h2>Snapshots</h2><span class="hint">labels on revisions; roll back to any of them</span></div>
+  {% if can_publish %}
+  <form class="toolbar" hx-post="{{ s.base }}p/{{ alias }}/snapshots" hx-target="#snapshots">
+    <input name="label" placeholder="label, e.g. before-upgrade" required pattern="[A-Za-z0-9._-]+" aria-label="label">
+    <input name="description" placeholder="description (optional)" aria-label="description">
+    <button type="submit">Label HEAD</button>
+  </form>
+  {% endif %}
+  <div id="snapshots" hx-get="{{ s.base }}p/{{ alias }}/snapshots" hx-trigger="load, packages-changed from:body"></div>
+</div>
 
-<h2>History</h2>
-<div id="history" hx-get="{{ s.base }}p/{{ alias }}/history" hx-trigger="load, packages-changed from:body"></div>
-<div id="diff"></div>
-<div id="rollback-result"></div>
+<div class="card">
+  <div class="card-head"><h2>History</h2></div>
+  <div id="history" hx-get="{{ s.base }}p/{{ alias }}/history" hx-trigger="load, packages-changed from:body"></div>
+  <div class="card-body results" id="history-results"><div id="diff"></div><div id="rollback-result"></div></div>
+</div>
 
-<h2>Layout</h2>
-{% if mirror.is_some() %}
-<p class="muted">Follows the upstream; change the mirror's definition instead.</p>
-<pre class="log">{{ layout_toml }}</pre>
-{% else if managed %}
-<p class="muted">Managed by the server's config file; edit it there and reload the server.</p>
-<pre class="log">{{ layout_toml }}</pre>
-{% else if can_admin %}
-<form class="block" hx-post="{{ s.base }}p/{{ alias }}/layout" hx-target="#layout-result">
-  <textarea name="layout" rows="14" class="mono">{{ layout_toml }}</textarea>
-  <div class="row">
-    <label class="check"><input type="checkbox" name="force" value="1"> force (drop cells that hold packages)</label>
-    <label class="check"><input type="checkbox" name="adopt" value="1"> adopt (new path holds a tree)</label>
-    <button type="submit">Preview</button>
+<details class="card panel">
+  <summary>Layout <span class="hint">dists, components, architectures and Release fields as TOML</span></summary>
+  <div class="panel-body">
+  {% if mirror.is_some() %}
+  <p class="muted">Follows the upstream; change the mirror's definition instead.</p>
+  <pre class="log">{{ layout_toml }}</pre>
+  {% else if managed %}
+  <p class="muted">Managed by the server's config file; edit it there and reload the server.</p>
+  <pre class="log">{{ layout_toml }}</pre>
+  {% else if can_admin %}
+  <form hx-post="{{ s.base }}p/{{ alias }}/layout" hx-target="#layout-result">
+    <textarea name="layout" rows="14">{{ layout_toml }}</textarea>
+    <div class="form-foot">
+      <label class="check"><input type="checkbox" name="force" value="1"> force (drop cells that hold packages)</label>
+      <label class="check"><input type="checkbox" name="adopt" value="1"> adopt (new path holds a tree)</label>
+      <span class="spacer"></span><button type="submit">Preview</button>
+    </div>
+  </form>
+  <div id="layout-result"></div>
+  {% else %}
+  <pre class="log">{{ layout_toml }}</pre>
+  {% endif %}
   </div>
-</form>
-<div id="layout-result"></div>
-{% else %}
-<pre class="log">{{ layout_toml }}</pre>
-{% endif %}
+</details>
 {% endblock %}

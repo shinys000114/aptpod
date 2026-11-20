@@ -1,9 +1,13 @@
 {% extends "base.html" %}
 {% block title %}Job {{ id }} · aptpod{% endblock %}
 {% block main %}
-<h1>Job {{ id }} <span class="state {{ state_class }}">{{ state }}</span></h1>
-<p>{{ kind }} {{ resource }} by {{ user }}, {{ created }}</p>
-{% if !summary.is_empty() %}<p>{{ summary }}</p>{% endif %}
-{% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}
+<div class="page-head"><div class="title">
+  <h1>Job {{ id }} <span class="badge {{ state_class }}">{{ state }}</span></h1>
+  <div class="meta"><span>{{ kind }}</span><span class="mono">{{ resource }}</span><span>by <b>{{ user }}</b></span><span>{{ created }}</span></div>
+</div></div>
+{% if !summary.is_empty() %}<div class="callout">{{ summary }}</div>{% endif %}
+{% if let Some(e) = error %}<div class="callout warn"><span class="error">{{ e }}</span></div>{% endif %}
+<div class="card"><div class="card-head"><h2>Log</h2></div><div class="card-body">
 {% include "joblog.html" %}
+</div></div>
 {% endblock %}

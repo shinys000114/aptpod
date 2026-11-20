@@ -518,7 +518,7 @@ fn web_ui_admin() {
     let page = a.get(format!("{url}p/t")).send().unwrap().text().unwrap();
     let toml_text = between(
         &page,
-        "<textarea name=\"layout\" rows=\"14\" class=\"mono\">",
+        "<textarea name=\"layout\" rows=\"14\">",
         "</textarea>",
     )
     .replace("&#34;", "\"")
@@ -611,13 +611,9 @@ fn web_ui_admin() {
         .text()
         .unwrap();
     assert!(job_page.contains("failed"), "{job_page}");
-    let def = between(
-        &page,
-        "<textarea name=\"def\" rows=\"16\" class=\"mono\">",
-        "</textarea>",
-    )
-    .replace("&#34;", "\"")
-    .replace("max_delete = 10000", "max_delete = 5");
+    let def = between(&page, "<textarea name=\"def\" rows=\"16\">", "</textarea>")
+        .replace("&#34;", "\"")
+        .replace("max_delete = 10000", "max_delete = 5");
     let (_, saved) = htmx_post(
         &a,
         &format!("{url}mirrors/m/edit"),
@@ -634,7 +630,7 @@ fn web_ui_admin() {
         Some(&at),
         &[("name", "from-web")],
     );
-    let token = between(&tokens, "<code class=\"mono\">", "</code>").to_string();
+    let token = between(&tokens, "<code class=\"secret\">", "</code>").to_string();
     let who = |t: &str| {
         reqwest::blocking::Client::new()
             .get(format!("{url}api/v1/whoami"))

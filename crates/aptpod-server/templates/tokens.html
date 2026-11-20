@@ -1,13 +1,13 @@
-{% if let Some(t) = new_token %}<div class="plan done"><p>New token (shown once): <code class="mono">{{ t }}</code></p></div>{% endif %}
-{% for e in errors %}<p class="error">{{ e }}</p>{% endfor %}
-{% if tokens.is_empty() %}<p class="muted">No tokens.</p>{% else %}
-<table>
-  <thead><tr><th>#</th><th>Name</th><th>Created</th><th>Last used</th><th></th></tr></thead>
+{% if let Some(t) = new_token %}<div class="card-body"><div class="plan done"><p><b>New token</b> (shown once; copy it now)</p><code class="secret">{{ t }}</code></div></div>{% endif %}
+{% for e in errors %}<p class="error card-body">{{ e }}</p>{% endfor %}
+{% if tokens.is_empty() %}<p class="empty">No tokens.</p>{% else %}
+<div class="table-wrap"><table>
+  <thead><tr><th class="num">#</th><th>Name</th><th>Created</th><th>Last used</th><th></th></tr></thead>
   <tbody>
   {% for t in tokens %}
-  <tr><td class="num">{{ t.id }}</td><td>{{ t.name }}</td><td>{{ t.created }}</td><td>{{ t.last_used }}</td>
-    <td><button class="link danger" hx-post="{{ base }}account/tokens/{{ t.id }}/revoke" hx-target="#tokens" hx-confirm="Revoke token {{ t.name }}?">revoke</button></td></tr>
+  <tr><td class="num">{{ t.id }}</td><td><b>{{ t.name }}</b></td><td class="nowrap">{{ t.created }}</td><td class="nowrap">{{ t.last_used }}</td>
+    <td class="acts"><button class="link danger" hx-post="{{ base }}account/tokens/{{ t.id }}/revoke" hx-target="#tokens" hx-confirm="Revoke token {{ t.name }}?">revoke</button></td></tr>
   {% endfor %}
   </tbody>
-</table>
+</table></div>
 {% endif %}

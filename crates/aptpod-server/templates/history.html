@@ -1,17 +1,17 @@
-{% if revisions.is_empty() %}<p class="muted">No revisions.</p>{% else %}
-<table>
-  <thead><tr><th>#</th><th>Time</th><th>By</th><th>Change</th><th>Labels</th><th></th></tr></thead>
+{% if revisions.is_empty() %}<p class="empty">No revisions.</p>{% else %}
+<div class="table-wrap"><table>
+  <thead><tr><th class="num">#</th><th>Time</th><th>By</th><th>Change</th><th>Labels</th><th></th></tr></thead>
   <tbody>
   {% for r in revisions %}
   <tr>
-    <td class="num">{{ r.id }}{% if r.head %} <span class="tag">HEAD</span>{% endif %}</td>
-    <td>{{ r.created }}</td><td>{{ r.author }}</td><td>{{ r.message }}</td><td>{{ r.labels }}</td>
-    <td>{% if !r.head %}
+    <td class="num nowrap">{% if r.head %}<span class="tag accent">HEAD</span> {% endif %}{{ r.id }}</td>
+    <td class="nowrap">{{ r.created }}</td><td>{{ r.author }}</td><td class="wrap">{{ r.message }}</td><td>{% if !r.labels.is_empty() %}<span class="tag">{{ r.labels }}</span>{% endif %}</td>
+    <td class="acts">{% if !r.head %}
       <button class="link" hx-get="{{ base }}p/{{ alias }}/diff?from=%23{{ r.id }}" hx-target="#diff">diff to HEAD</button>
       {% if can_publish %}<button class="link" hx-post="{{ base }}p/{{ alias }}/rollback" hx-vals='{"to": "#{{ r.id }}"}' hx-target="#rollback-result">roll back…</button>{% endif %}
     {% endif %}</td>
   </tr>
   {% endfor %}
   </tbody>
-</table>
+</table></div>
 {% endif %}

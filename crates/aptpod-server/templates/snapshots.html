@@ -1,12 +1,12 @@
-{% for e in errors %}<p class="error">{{ e }}</p>{% endfor %}
-{% if snapshots.is_empty() %}<p class="muted">No snapshot labels.</p>{% else %}
-<table>
-  <thead><tr><th>Label</th><th>Revision</th><th>Created</th><th>Description</th><th></th></tr></thead>
+{% for e in errors %}<p class="error card-body">{{ e }}</p>{% endfor %}
+{% if snapshots.is_empty() %}<p class="empty">No snapshot labels.</p>{% else %}
+<div class="table-wrap"><table>
+  <thead><tr><th>Label</th><th class="num">Revision</th><th>Created</th><th>Description</th><th></th></tr></thead>
   <tbody>
   {% for x in snapshots %}
   <tr>
-    <td>{{ x.label }}</td><td class="num">#{{ x.revision }}</td><td>{{ x.created }}</td><td>{{ x.description }}</td>
-    <td>
+    <td><b>{{ x.label }}</b></td><td class="num">#{{ x.revision }}</td><td class="nowrap">{{ x.created }}</td><td class="wrap">{{ x.description }}</td>
+    <td class="acts">
       <button class="link" hx-get="{{ base }}p/{{ alias }}/diff?from={{ x.label|urlencode }}" hx-target="#diff">diff to HEAD</button>
       {% if can_publish %}
       <button class="link" hx-post="{{ base }}p/{{ alias }}/rollback" hx-vals='{"to": "{{ x.label }}"}' hx-target="#rollback-result">roll back…</button>
@@ -16,5 +16,5 @@
   </tr>
   {% endfor %}
   </tbody>
-</table>
+</table></div>
 {% endif %}

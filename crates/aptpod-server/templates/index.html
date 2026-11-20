@@ -1,56 +1,79 @@
 {% extends "base.html" %}
 {% block main %}
-<h1>Publishes</h1>
-{% if publishes.is_empty() %}<p class="muted">No publishes yet.</p>{% else %}
-<table>
-  <thead><tr><th>Publish</th><th>Path</th><th>Dists</th><th>Components</th><th>Packages</th><th></th></tr></thead>
-  <tbody>
-  {% for p in publishes %}
-  <tr>
-    <td><a href="{{ s.base }}p/{{ p.alias }}">{{ p.alias }}</a></td>
-    <td class="mono">{{ p.path }}</td>
-    <td>{{ p.dists }}</td>
-    <td>{{ p.components }}</td>
-    <td class="num">{{ p.packages }}</td>
-    <td>{% if p.managed %}<span class="tag">config file</span>{% endif %}{% if p.mirrored %}<span class="tag">mirror</span>{% endif %}</td>
-  </tr>
-  {% endfor %}
-  </tbody>
-</table>
-{% endif %}
+<div class="page-head">
+  <div class="title"><h1>Overview</h1><p class="sub">Publishes, mirrors and recent work on this server.</p></div>
+</div>
 
-{% if can_admin %}
-<details>
-  <summary>New publish</summary>
-  <form class="block" hx-post="{{ s.base }}publishes/new" hx-target="#new-result">
-    <input name="alias" placeholder="alias" required>
-    <textarea name="layout" rows="8" class="mono">path = "/srv/apt/NAME"
+<div class="stats">
+  <div class="stat"><div class="label">Publishes</div><div class="value">{{ publishes.len() }}</div></div>
+  <div class="stat"><div class="label">Packages</div><div class="value">{{ total_packages }}</div></div>
+  <div class="stat"><div class="label">Mirrors</div><div class="value">{{ mirrors.len() }}</div></div>
+  <div class="stat"><div class="label">Mirrors failing</div><div class="value{% if mirrors_failed > 0 %} bad{% endif %}">{{ mirrors_failed }}</div></div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Publishes</h2></div>
+  {% if publishes.is_empty() %}<p class="empty">No publishes yet.</p>{% else %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Publish</th><th>Dists</th><th>Components</th><th class="num">Packages</th><th>Path</th></tr></thead>
+    <tbody>
+    {% for p in publishes %}
+    <tr>
+      <td class="nowrap"><a href="{{ s.base }}p/{{ p.alias }}"><b>{{ p.alias }}</b></a>
+        {% if p.managed %}<span class="tag">config file</span>{% endif %}{% if p.mirrored %} <span class="tag accent">mirror</span>{% endif %}</td>
+      <td>{{ p.dists }}</td>
+      <td class="wrap">{{ p.components }}</td>
+      <td class="num">{{ p.packages }}</td>
+      <td class="mono wrap">{{ p.path }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% endif %}
+  {% if can_admin %}
+  <details class="panel">
+    <summary>New publish <span class="hint">layout as TOML, previewed before it is created</span></summary>
+    <div class="panel-body">
+    <form hx-post="{{ s.base }}publishes/new" hx-target="#new-result">
+      <div class="fields">
+        <label class="field"><span>Name</span><input name="alias" placeholder="e.g. ppa" required></label>
+        <label class="field wide"><span>Layout</span><textarea name="layout" rows="8">path = "/srv/apt/NAME"
 dists = ["noble"]
 components = ["main"]
 architectures = ["amd64"]
 origin = ""
 label = ""
 sign = true
-</textarea>
-    <div class="row"><label class="check"><input type="checkbox" name="adopt" value="1"> adopt (path holds a tree)</label>
-    <button type="submit">Preview</button></div>
-  </form>
-  <div id="new-result"></div>
-</details>
-{% endif %}
+</textarea></label>
+      </div>
+      <div class="form-foot"><label class="check"><input type="checkbox" name="adopt" value="1"> adopt (path holds a tree)</label><span class="spacer"></span>
+      <button type="submit">Preview</button></div>
+    </form>
+    <div id="new-result"></div>
+    </div>
+  </details>
+  {% endif %}
+</div>
 
-<h1>Mirrors</h1>
-{% if mirrors.is_empty() %}<p class="muted">No mirrors.</p>{% else %}
-<table>
-  <thead><tr><th>Mirror</th><th>Kind</th><th>State</th><th>Finished</th><th>Next run</th></tr></thead>
-  <tbody>
-  {% for m in mirrors %}
-  <tr><td>{{ m.name }}</td><td>{{ m.kind }}</td><td><span class="state {{ m.state_class }}">{{ m.state }}</span></td><td>{{ m.finished }}</td><td>{{ m.next_run }}</td></tr>
-  {% endfor %}
-  </tbody>
-</table>
-{% endif %}
+<div class="grid">
+<div class="card">
+  <div class="card-head"><h2>Mirrors</h2><a href="{{ s.base }}mirrors">All mirrors</a></div>
+  {% if mirrors.is_empty() %}<p class="empty">No mirrors.</p>{% else %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Mirror</th><th>State</th><th>Finished</th><th>Next run</th></tr></thead>
+    <tbody>
+    {% for m in mirrors %}
+    <tr><td class="nowrap"><a href="{{ s.base }}mirrors/{{ m.name }}"><b>{{ m.name }}</b></a> <span class="tag">{{ m.kind }}</span></td>
+      <td><span class="badge {{ m.state_class }}">{{ m.state }}</span></td><td class="nowrap">{{ m.finished }}</td><td class="nowrap">{{ m.next_run }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% endif %}
+</div>
+</div>
 
-<h1>Recent jobs</h1>
-{% include "jobs_table.html" %}
+<div class="card mt">
+  <div class="card-head"><h2>Recent jobs</h2><a href="{{ s.base }}jobs">All jobs</a></div>
+  {% include "jobs_table.html" %}
+</div>
 {% endblock %}

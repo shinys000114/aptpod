@@ -143,6 +143,9 @@ pub struct Shell {
     pub csrf: String,
     pub base: &'static str,
     pub css: &'static str,
+    /// Navigation entry of the current page (publishes, mirrors, jobs,
+    /// account, users).
+    pub section: &'static str,
 }
 
 /// A logged-in UI user. Non-GET requests are rejected without the
@@ -150,6 +153,19 @@ pub struct Shell {
 pub struct UiUser {
     pub user: User,
     pub csrf: String,
+    pub section: &'static str,
+}
+
+/// The navigation entry a UI path belongs to.
+fn section_of(path: &str) -> &'static str {
+    let rel = path.strip_prefix(base()).unwrap_or(path);
+    match rel.split('/').next().unwrap_or("") {
+        "mirrors" => "mirrors",
+        "jobs" => "jobs",
+        "account" => "account",
+        "admin" => "users",
+        _ => "publishes",
+    }
 }
 
 impl UiUser {
@@ -163,6 +179,7 @@ impl UiUser {
             csrf: self.csrf.clone(),
             base: base(),
             css: css_path(),
+            section: self.section,
         }
     }
     pub(super) fn can(&self, role: Role) -> bool {
@@ -202,7 +219,11 @@ impl FromRequestParts<Arc<AppState>> for UiUser {
                 return Err((StatusCode::FORBIDDEN, "missing or wrong CSRF token").into_response());
             }
         }
-        Ok(UiUser { user, csrf })
+        Ok(UiUser {
+            user,
+            csrf,
+            section: section_of(parts.uri.path()),
+        })
     }
 }
 
@@ -266,8 +287,9 @@ pub(super) fn state_class(state: &str) -> &'static str {
     match state {
         "done" | "synced" => "ok",
         "failed" => "bad",
-        "interrupted" | "running" | "syncing" => "warn",
-        _ => "",
+        "interrupted" => "warn",
+        "running" | "syncing" | "queued" => "run",
+        _ => "idle",
     }
 }
 
@@ -291,6 +313,7 @@ fn login_form(st: &AppState, error: Option<String>, status: StatusCode) -> Respo
             csrf: String::new(),
             base: base(),
             css: css_path(),
+            section: "",
         },
         login_csrf: token.clone(),
         error,
@@ -433,6 +456,8 @@ struct IndexPage {
     publishes: Vec<PublishRow>,
     mirrors: Vec<MirrorRow>,
     jobs: Vec<JobRow>,
+    total_packages: usize,
+    mirrors_failed: usize,
 }
 
 async fn index(State(st): State<Arc<AppState>>, u: UiUser) -> Response {
@@ -482,9 +507,12 @@ async fn index(State(st): State<Arc<AppState>>, u: UiUser) -> Response {
                 name,
             });
         }
+        let publishes: Vec<PublishRow> = publishes;
         Ok(IndexPage {
             s: u.shell(),
             can_admin: u.can(Role::Admin),
+            total_packages: publishes.iter().map(|p| p.packages).sum(),
+            mirrors_failed: mirrors.iter().filter(|m| m.state_class == "bad").count(),
             publishes,
             mirrors,
             jobs: job_rows(&st, 10)?,
