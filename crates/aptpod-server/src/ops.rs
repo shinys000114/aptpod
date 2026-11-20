@@ -109,24 +109,24 @@ fn commit(apply: bool, expect: Bases) -> Commit {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RmReq {
-    component: String,
+pub(crate) struct RmReq {
+    pub(crate) component: String,
     #[serde(default)]
-    packages: Vec<String>,
+    pub(crate) packages: Vec<String>,
     #[serde(default)]
-    all: bool,
-    versions: Option<String>,
-    arch: Option<String>,
-    dists: Option<Vec<String>>,
+    pub(crate) all: bool,
+    pub(crate) versions: Option<String>,
+    pub(crate) arch: Option<String>,
+    pub(crate) dists: Option<Vec<String>>,
     /// Only remove versions beyond the newest `keep` per name and arch.
-    keep: Option<u32>,
+    pub(crate) keep: Option<u32>,
     #[serde(default)]
-    apply: bool,
+    pub(crate) apply: bool,
     #[serde(default)]
-    expect: Bases,
+    pub(crate) expect: Bases,
 }
 
-async fn rm(
+pub(crate) async fn rm(
     State(st): St,
     caller: Caller,
     Path(alias): Path<String>,

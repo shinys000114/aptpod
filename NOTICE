@@ -30,3 +30,7 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
 OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 IN THE SOFTWARE.------------------------------------------------------------------------------
+
+The web UI ships htmx 2.0.11 (crates/aptpod-server/assets/htmx.min.js,
+unchanged from the npm package htmx.org, integrity verified), Copyright
+(c) 2020, Big Sky Software, under the Zero-Clause BSD license.

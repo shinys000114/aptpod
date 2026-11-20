@@ -1,0 +1,14 @@
+<div class="plan">
+{% for w in warnings %}<p class="warning">{{ w }}</p>{% endfor %}
+{% if empty %}
+  <p class="muted">Nothing to do.</p>
+{% else %}
+  <ul class="changes">{% for l in lines %}<li class="mono">{{ l }}</li>{% endfor %}</ul>
+  <form hx-post="{{ action }}" hx-target="closest .plan" hx-swap="outerHTML">
+    {% for (k, v) in fields %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}
+    <input type="hidden" name="apply" value="1">
+    <input type="hidden" name="expect" value="{{ expect }}">
+    <button type="submit" class="{% if destructive %}danger{% endif %}">Apply</button>
+  </form>
+{% endif %}
+</div>

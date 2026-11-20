@@ -37,6 +37,13 @@ pub struct Config {
     /// edited through the API.
     #[serde(default)]
     pub config_file: Option<PathBuf>,
+    /// Web UI session cookies only over HTTPS (set when a TLS proxy is in
+    /// front, as it should be).
+    #[serde(default)]
+    pub cookie_secure: bool,
+    /// Web UI sessions last this many hours.
+    #[serde(default = "twelve")]
+    pub session_hours: u32,
     /// Largest accepted upload, in bytes.
     #[serde(default = "default_upload_limit")]
     pub upload_limit: u64,
@@ -62,6 +69,9 @@ fn default_listen() -> String {
 }
 fn default_data_dir() -> PathBuf {
     "/var/lib/aptpod".into()
+}
+fn twelve() -> u32 {
+    12
 }
 fn one() -> usize {
     1

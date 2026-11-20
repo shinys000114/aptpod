@@ -13,6 +13,7 @@ mod mirrors;
 mod ops;
 mod runner;
 mod schedule;
+mod ui;
 mod users;
 mod writer;
 

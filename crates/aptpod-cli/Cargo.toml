@@ -24,6 +24,9 @@ time.workspace = true
 
 [dev-dependencies]
 aptpod-core = { workspace = true, features = ["testutil"] }
+# tests/ui.rs: a browser-like client
+reqwest = { workspace = true, features = ["cookies", "form"] }
+sha2.workspace = true
 
 [package.metadata.deb]
 name = "aptpod"

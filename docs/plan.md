@@ -592,6 +592,28 @@ a test (a wrong length would only restart the download); indices fetched
 concurrently are held in memory until parsed, so a large Contents file
 selected through `extras` costs that much memory.
 
+## P5 notes (web UI)
+
+Server-rendered pages (askama, HTML-escaped by default, no `|safe`) with
+htmx 2.0.11 vendored (served from the binary, eval, script tags and
+injected styles off, CSP `script-src 'self'`). Sessions: cookies stored
+hashed in server.db with an expiry, issued anew at login, the role read
+from users on every request; HttpOnly, SameSite=Lax, Secure from
+`cookie_secure`. Every non-GET UI request needs the session's CSRF token
+(`X-CSRF-Token`, sent by htmx from the body); the login form uses a
+double-submit cookie. The session cookie never authenticates `/api/v1`.
+UI handlers call the API handlers directly, so roles, previews, stale
+checks and config-file rules are shared; a preview's bases travel back
+as one JSON hidden field (`expect`). Links go through one function
+(`ui::base`) for a later sub-path deployment.
+
+Progress: P5a slice - login/logout, overview (publishes, mirrors, recent
+jobs), jobs and job log pages, a publish page (dist x component matrix,
+filterable package list), `rm` with preview/apply; tests for the
+session/CSRF/role/stale/escaping invariants. Next: add/upload, promote,
+snapshots/diff/rollback, layout editing, mirrors (sync/stop, log
+follow), users and tokens.
+
 ## Testing
 
 - Unit tests per crate; dpkg cross-check for version ordering.

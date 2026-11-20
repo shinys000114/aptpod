@@ -33,6 +33,7 @@ toml.workspace = true
 thiserror.workspace = true
 sha2.workspace = true
 jiff.workspace = true
+askama.workspace = true
 time.workspace = true
 rustix.workspace = true
 

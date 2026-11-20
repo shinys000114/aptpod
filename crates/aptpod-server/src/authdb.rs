@@ -30,6 +30,13 @@ CREATE TABLE IF NOT EXISTS tokens (
     created INTEGER NOT NULL,
     last_used INTEGER
 );
+CREATE TABLE IF NOT EXISTS sessions (
+    hash TEXT PRIMARY KEY,
+    user INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    csrf TEXT NOT NULL,
+    created INTEGER NOT NULL,
+    expires INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS mirrors (
     name TEXT PRIMARY KEY,
     def TEXT NOT NULL,
@@ -306,6 +313,40 @@ impl AuthDb {
             params![user, name, token_hash(&token), now()],
         )?;
         Ok(token)
+    }
+
+    /// A web session: returns the cookie value (shown once, stored hashed)
+    /// and its CSRF token.
+    pub fn session_create(&self, user: i64, ttl_secs: i64) -> R<(String, String)> {
+        let id = random_hex(32);
+        let csrf = random_hex(16);
+        let t = now();
+        let c = self.conn();
+        c.execute("DELETE FROM sessions WHERE expires <= ?1", [t])?;
+        c.execute(
+            "INSERT INTO sessions (hash, user, csrf, created, expires) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![token_hash(&id), user, csrf, t, t + ttl_secs],
+        )?;
+        Ok((id, csrf))
+    }
+
+    /// The user (with the role as it is now) and CSRF token of a live
+    /// session.
+    pub fn session(&self, id: &str) -> R<Option<(User, String)>> {
+        self.conn()
+            .query_row(
+                "SELECT u.id, u.name, u.role, s.csrf FROM sessions s JOIN users u ON u.id = s.user
+                 WHERE s.hash = ?1 AND s.expires > ?2",
+                params![token_hash(id), now()],
+                |r| Ok((row_user(r)?, r.get(3)?)),
+            )
+            .optional()
+    }
+
+    pub fn session_delete(&self, id: &str) -> R<()> {
+        self.conn()
+            .execute("DELETE FROM sessions WHERE hash = ?1", [token_hash(id)])?;
+        Ok(())
     }
 
     pub fn authenticate(&self, token: &str) -> R<Option<User>> {

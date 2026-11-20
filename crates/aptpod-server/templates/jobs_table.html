@@ -1,0 +1,16 @@
+{% if jobs.is_empty() %}<p class="muted">No jobs yet.</p>{% else %}
+<table>
+  <thead><tr><th>#</th><th>Started</th><th>State</th><th>Kind</th><th>Resource</th><th>User</th><th>Result</th></tr></thead>
+  <tbody>
+  {% for j in jobs %}
+  <tr>
+    <td class="num"><a href="{{ s.base }}jobs/{{ j.id }}">{{ j.id }}</a></td>
+    <td>{{ j.created }}</td>
+    <td><span class="state {{ j.state_class }}">{{ j.state }}</span></td>
+    <td>{{ j.kind }}</td><td>{{ j.resource }}</td><td>{{ j.user }}</td>
+    <td>{{ j.text }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}

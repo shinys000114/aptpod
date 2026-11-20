@@ -1,0 +1,11 @@
+{% if rows.is_empty() %}<p class="muted">No packages match.</p>{% else %}
+<table>
+  <thead><tr><th>Dist</th><th>Component</th><th>Name</th><th>Version</th><th>Arch</th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+  <tr><td>{{ r.dist }}</td><td>{{ r.component }}</td><td>{{ r.name }}</td><td class="mono">{{ r.version }}</td><td>{{ r.arch }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% if truncated %}<p class="muted">Showing the first {{ rows.len() }} of {{ total }}; narrow the filter.</p>{% endif %}
+{% endif %}

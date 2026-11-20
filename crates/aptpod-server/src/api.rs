@@ -62,6 +62,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/events", get(crate::events::events))
         .merge(crate::ops::routes())
         .merge(crate::users::routes())
+        .merge(crate::ui::routes())
         .fallback(|| async {
             ApiError::new(StatusCode::NOT_FOUND, "not_found", "no such endpoint")
         })
@@ -168,6 +169,16 @@ pub(crate) type Res<T> = Result<Json<T>, ApiError>;
 pub struct Caller {
     pub user: User,
     token: String,
+}
+
+impl Caller {
+    /// A caller from a web UI session (no API token).
+    pub(crate) fn from_session(user: User) -> Self {
+        Self {
+            user,
+            token: String::new(),
+        }
+    }
 }
 
 impl Caller {
@@ -469,8 +480,8 @@ pub(crate) struct PlanView {
     pub(crate) lines: Vec<String>,
     changes: Vec<ChangeView>,
     pub(crate) warnings: Vec<String>,
-    bases: Vec<(String, Option<i64>)>,
-    destructive: bool,
+    pub(crate) bases: Vec<(String, Option<i64>)>,
+    pub(crate) destructive: bool,
     pub(crate) empty: bool,
 }
 
@@ -497,9 +508,9 @@ impl PlanView {
 pub(crate) struct Outcome {
     pub(crate) plan: PlanView,
     #[serde(skip_serializing_if = "Option::is_none")]
-    applied: Option<Applied>,
+    pub(crate) applied: Option<Applied>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    job: Option<i64>,
+    pub(crate) job: Option<i64>,
 }
 
 /// Computes a plan on the writer and, if asked, applies it there in the

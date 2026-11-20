@@ -1,0 +1,4 @@
+<div class="plan done">
+  <p>Applied{% if let Some(j) = job %} (job <a href="{{ s_base }}jobs/{{ j }}">{{ j }}</a>){% endif %}.</p>
+  <ul class="changes">{% for l in lines %}<li class="mono">{{ l }}</li>{% endfor %}</ul>
+</div>

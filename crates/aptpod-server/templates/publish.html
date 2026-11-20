@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}{{ alias }} · aptpod{% endblock %}
+{% block main %}
+<h1>{{ alias }} {% if managed %}<span class="tag">config file</span>{% endif %}</h1>
+<p class="mono">{{ path }}</p>
+
+<h2>Cells</h2>
+<table class="matrix">
+  <thead><tr><th></th>{% for c in components %}<th>{{ c }}</th>{% endfor %}</tr></thead>
+  <tbody>
+  {% for row in matrix %}
+  <tr><th>{{ row.dist }}</th>{% for n in row.counts %}<td class="num">{{ n }}</td>{% endfor %}</tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<h2>Packages</h2>
+<form class="filter" hx-get="{{ s.base }}p/{{ alias }}/packages" hx-target="#packages" hx-trigger="input changed delay:300ms, submit">
+  <input name="q" placeholder="name, name=version, glob">
+  <select name="dist"><option value="">all dists</option>{% for d in dists %}<option>{{ d }}</option>{% endfor %}</select>
+  <select name="component"><option value="">all components</option>{% for c in components %}<option>{{ c }}</option>{% endfor %}</select>
+</form>
+<div id="packages" hx-get="{{ s.base }}p/{{ alias }}/packages" hx-trigger="load, packages-changed from:body">
+</div>
+
+{% if can_publish %}
+<h2>Remove packages</h2>
+<form class="action" hx-post="{{ s.base }}p/{{ alias }}/rm" hx-target="#rm-result">
+  <select name="component">{% for c in components %}<option>{{ c }}</option>{% endfor %}</select>
+  <input name="packages" placeholder="patterns, space separated">
+  <input name="dists" placeholder="dists (default: all)">
+  <input name="keep" placeholder="keep newest N" size="12">
+  <button type="submit">Preview</button>
+</form>
+<div id="rm-result"></div>
+{% endif %}
+{% endblock %}

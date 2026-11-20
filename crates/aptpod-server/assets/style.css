@@ -1,0 +1,32 @@
+/* SPDX-License-Identifier: GPL-3.0-only */
+:root { --fg: #1d1d1f; --muted: #6e6e73; --line: #d2d2d7; --bg: #fff; --accent: #0b5cad; --ok: #2e7d32; --bad: #c62828; --warn: #b26a00; }
+@media (prefers-color-scheme: dark) { :root { --fg: #e8e8ea; --muted: #9a9aa0; --line: #3a3a3e; --bg: #18181a; --accent: #6aa8ff; --ok: #66bb6a; --bad: #ef5350; --warn: #ffb74d; } }
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.45 system-ui, sans-serif; color: var(--fg); background: var(--bg); }
+header { display: flex; gap: 1.5rem; align-items: center; padding: .6rem 1rem; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+header .brand { font-weight: 700; color: var(--fg); text-decoration: none; }
+header nav { display: flex; gap: 1rem; }
+header .who { margin-left: auto; color: var(--muted); }
+main { padding: 1rem; max-width: 1200px; }
+a { color: var(--accent); }
+h1 { font-size: 1.3rem; margin: 1.2rem 0 .6rem; }
+h2 { font-size: 1.05rem; margin: 1rem 0 .5rem; }
+table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; }
+th, td { text-align: left; padding: .3rem .5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.matrix { width: auto; } .matrix td { min-width: 4rem; }
+.mono, pre { font-family: ui-monospace, monospace; font-size: 13px; }
+pre.log { background: color-mix(in srgb, var(--fg) 6%, transparent); padding: .8rem; overflow-x: auto; white-space: pre-wrap; }
+.muted { color: var(--muted); }
+.tag { font-size: 12px; border: 1px solid var(--line); border-radius: 4px; padding: 0 .3rem; color: var(--muted); }
+.state.ok { color: var(--ok); } .state.bad { color: var(--bad); } .state.warn { color: var(--warn); }
+.error { color: var(--bad); } .warning { color: var(--warn); }
+form.filter, form.action { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: .6rem; }
+input, select, button { font: inherit; padding: .3rem .5rem; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); color: var(--fg); }
+button { cursor: pointer; } button.danger { border-color: var(--bad); color: var(--bad); }
+button.link { border: 0; background: none; color: var(--accent); padding: 0 .3rem; }
+.plan { border: 1px solid var(--line); border-radius: 6px; padding: .6rem .8rem; margin: .5rem 0 1rem; }
+.plan.done { border-color: var(--ok); }
+ul.changes { margin: .3rem 0 .6rem 1rem; padding: 0; }
+form.login { max-width: 22rem; margin: 3rem auto; display: flex; flex-direction: column; gap: .6rem; }
+form.login label { display: flex; flex-direction: column; gap: .2rem; }

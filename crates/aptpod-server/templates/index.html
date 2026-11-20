@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block main %}
+<h1>Publishes</h1>
+{% if publishes.is_empty() %}<p class="muted">No publishes yet.</p>{% else %}
+<table>
+  <thead><tr><th>Publish</th><th>Path</th><th>Dists</th><th>Components</th><th>Packages</th><th></th></tr></thead>
+  <tbody>
+  {% for p in publishes %}
+  <tr>
+    <td><a href="{{ s.base }}p/{{ p.alias }}">{{ p.alias }}</a></td>
+    <td class="mono">{{ p.path }}</td>
+    <td>{{ p.dists }}</td>
+    <td>{{ p.components }}</td>
+    <td class="num">{{ p.packages }}</td>
+    <td>{% if p.managed %}<span class="tag">config file</span>{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<h1>Mirrors</h1>
+{% if mirrors.is_empty() %}<p class="muted">No mirrors.</p>{% else %}
+<table>
+  <thead><tr><th>Mirror</th><th>Kind</th><th>State</th><th>Finished</th><th>Next run</th></tr></thead>
+  <tbody>
+  {% for m in mirrors %}
+  <tr><td>{{ m.name }}</td><td>{{ m.kind }}</td><td><span class="state {{ m.state_class }}">{{ m.state }}</span></td><td>{{ m.finished }}</td><td>{{ m.next_run }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<h1>Recent jobs</h1>
+{% include "jobs_table.html" %}
+{% endblock %}

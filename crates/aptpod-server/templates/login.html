@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Log in · aptpod{% endblock %}
+{% block main %}
+<form class="login" method="post" action="{{ s.base }}login">
+  <h1>Log in</h1>
+  {% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}
+  <input type="hidden" name="csrf" value="{{ login_csrf }}">
+  <label>User <input name="user" autocomplete="username" required autofocus></label>
+  <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+  <button type="submit">Log in</button>
+</form>
+{% endblock %}
