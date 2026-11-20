@@ -14,6 +14,7 @@ pub mod index;
 pub mod pool;
 pub mod publish;
 pub mod sign;
+pub mod term;
 pub mod verify;
 pub mod version;
 

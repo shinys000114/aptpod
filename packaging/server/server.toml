@@ -1,9 +1,23 @@
 # aptpod-server bootstrap settings. Repository layouts, mirrors, users and
 # schedules live in the server database; manage them with the `aptpod` CLI,
-# the web UI, or `aptpod config import <file.toml>`.
+# the web UI, or `aptpod config import <file.toml>`. Add the first user with
+# `sudo -u aptpod aptpod-server user add <name> --role admin`.
 
 # Address of the REST API and web UI. Put a TLS reverse proxy in front.
 listen = "127.0.0.1:8090"
 
-# Database, package pool and job logs.
+# Database, package store, uploads and job logs.
 data_dir = "/var/lib/aptpod"
+
+# Publishes can only be created under these directories (the web server
+# serves them). The aptpod user needs write access.
+publish_roots = []
+
+# Largest accepted upload in bytes (default 2 GiB).
+#upload_limit = 2147483648
+
+# Release signing key, used by publishes with sign = true.
+#[signing]
+#key = "<fingerprint>"
+#passphrase_file = "/etc/aptpod/signing.pass"
+#homedir = "/var/lib/aptpod/gnupg"

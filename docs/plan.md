@@ -108,8 +108,9 @@ crates/
   aptpod-mirror   fetch engine: apt-over-HTTP (InRelease -> indices ->
                   pool, by-hash, parallel, resume, verify), rsync two-pass,
                   re-signed import into aptpod-repo
-  aptpod-server   axum API, auth, jobs (per-prefix locks, SSE logs),
-                  scheduler (cron), audit, layout revisions, web UI
+  aptpod-server   axum API, auth, single writer (jobs with resource
+                  keys, SSE logs), scheduler (cron), audit, layout
+                  revisions, web UI
   aptpod-cli      clap CLI over the API, credentials file, --json
 tests/            end-to-end: real apt in Debian/Ubuntu containers
 ```
@@ -196,7 +197,8 @@ directory listing of `dists/`.
 ## API and CLI
 
 As in the aptrix design (`/api/v1`, Bearer token or session + CSRF; every
-write is a job; `dry_run` for previews; SSE job logs). Read: status, plan,
+write is a job; stateless preview/apply bound to head revisions, see P3
+notes; SSE job logs). Read: status, plan,
 packages, snapshots, diff, mirrors, jobs. Write: sync, add (upload or URL +
 checksums), rm, promote, prune-versions, snapshot, rollback, mirror sync, gc.
 Admin: publishes, mirrors, users, tokens, layout revisions.
@@ -208,7 +210,7 @@ Admin: publishes, mirrors, users, tokens, layout revisions.
 | P0 ✅ | Repo, workspace, CI (fmt, clippy, test), release pipeline (musl x86_64/aarch64, two .deb), license/NOTICE | a tag produces both .deb packages |
 | P1 ✅ | aptpod-core: version compare (cross-checked with dpkg), .deb parsing (gz/xz/zst), index writer, by-hash, gpg sign, rpgp verify, pool, atomic swap | containers `apt-get update && install` from a generated tree; indices match apt-ftparchive |
 | P2 ✅ | aptpod-repo: layout edits with dry-run, publish create/delete, add (local files, optional expected sha256), rm with globs and version conditions, promote, keep, prune-versions, revisions + snapshot labels, diff, rollback, history retention, refcounted pool cleanup, repair | the aptrix integration scenarios (minus the dropped aptly-only parts) ported and passing |
-| P3 | aptpod-server + aptpod CLI: API, users/tokens/roles, jobs + SSE + per-prefix locks, audit, layout revisions, TOML import/export, add from URLs + `--checksums` (downloads are server jobs; moved from P2), systemd unit | CI uploads and every CLI command go through the server |
+| P3 | aptpod-server + aptpod CLI: API, users/tokens/roles, single writer + jobs with resource keys + SSE, audit, layout revisions, TOML import/export, add from URLs (fetched by the CLI, then uploaded) + `--checksums`, systemd unit | CI uploads and every CLI command go through the server |
 | P4 | aptpod-mirror verbatim (HTTP, then rsync), scheduler | the reference PPA and Debian/Ubuntu mirrors run from aptpod with identical output |
 | P5 | Web UI: matrix, packages, upload/promote with preview, snapshots/diff/rollback, layout editor + history, mirrors, jobs, users/tokens | day-to-day work possible from a browser |
 | P6 | Re-signed mirrors | auto-replicated layout, filters, snapshot per sync |
@@ -258,6 +260,51 @@ publish delete. New - stale plan refusal, replace across dists, repair after
 a signing failure half way, path overlap. Dropped - `sync` confirmation and
 staged sources, `--prune`/`retire`, `--no-snapshot`/`pre-*` labels, aptly
 `gc`, URL add (P3).
+
+## P3 notes
+
+- **One writer.** A single thread owns the writing repository handle and
+  runs jobs in arrival order; each job records a resource key
+  (`publish:<alias>`, later `mirror:<name>`) in the job log. Queries use a
+  second, read-only handle and never wait for the writer. Per-resource
+  parallelism can come later without changing the API.
+- **Stateless preview/apply.** A change request computes a plan and returns
+  it with `bases` (the head revision of each publish it touches). Applying
+  repeats the same request with `apply: true` and `expect: <bases>`; the
+  writer recomputes the plan and refuses with `stale` (409) if any head
+  moved. Nothing is kept on the server between the two calls.
+- **Uploads.** `POST /api/v1/uploads` streams the body to
+  `<data_dir>/uploads/<random id>.deb` (limit `upload_limit`, default
+  2 GiB); later requests refer to the id. Applied uploads are deleted at
+  once, others after an hour. URLs given to `aptpod add` are downloaded by
+  the CLI and uploaded: the server never fetches on a client's behalf.
+- **Auth.** Users with argon2 passwords and a role: `reader` (GET),
+  `publisher` (package changes, uploads), `admin` (publishes, users, gc,
+  repair, config import). Tokens are random, stored as sha256, shown once.
+  Users live in `server.db` (mode 0600) apart from the repository
+  database, so `aptpod-server user ...` works next to a running server.
+  Passwords never come from argv (`--password-stdin` or a no-echo prompt);
+  the CLI's credentials file is mode 0600.
+- **Publish paths** must be under a `publish_roots` entry of server.toml.
+- **Startup**: lock `<data_dir>/lock` (one server per data dir), mark jobs
+  left running as interrupted, clean interrupted publishes, repair, drop
+  stale uploads. SIGTERM lets the running job finish.
+- **Errors** map to statuses and CLI exit codes: invalid 400 (1),
+  unauthorized/forbidden 401/403 (7), not found 404 (1), stale 409 (3),
+  conflict 409 (4), blocked 409 (5), unsynced 500 (6); usage errors exit 2.
+
+Progress: P3a+b thin slice done - config, lock, users/tokens/roles, writer,
+job log, uploads, publish create, add with preview/apply, packages listing,
+`aptpod login/logout/whoami/publish ls|show|create/add/ls/jobs`, and an
+end-to-end test of the real server and CLI. Next: rm, promote,
+prune-versions, snapshots, diff, rollback, layout edits and delete, gc and
+repair endpoints, SSE job logs, TOML import/export, `--checksums`.
+
+Open points: previews also run on the writer (they ingest uploads), so P4
+mirror syncs must not hold it for long stretches (download outside the
+writer, commit inside). Signing through server.toml `[signing]` has no
+end-to-end test yet (the engine's signing is covered in P1/P2). A saved
+token is sent only to the server URL it was issued by.
 
 ## Testing
 

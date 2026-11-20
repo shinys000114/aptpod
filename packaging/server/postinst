@@ -7,6 +7,9 @@ if [ "$1" = "configure" ]; then
             --gecos "aptpod server" aptpod
     fi
     chgrp aptpod /etc/aptpod/server.toml 2>/dev/null || true
+    # Owned by the service user, so `sudo -u aptpod aptpod-server user add`
+    # works before the first start.
+    install -d -o aptpod -g aptpod -m 0750 /var/lib/aptpod
 fi
 
 #DEBHELPER#

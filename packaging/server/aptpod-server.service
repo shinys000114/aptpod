@@ -15,8 +15,8 @@ StateDirectoryMode=0750
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=full
-# Repository output trees outside /var/lib/aptpod need ReadWritePaths= in a
-# drop-in (systemctl edit aptpod-server).
+# ProtectSystem=full keeps /usr, /boot and /etc read-only; publish roots
+# elsewhere (/srv, /var/www, ...) stay writable for the aptpod user.
 
 [Install]
 WantedBy=multi-user.target

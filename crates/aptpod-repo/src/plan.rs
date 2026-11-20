@@ -141,6 +141,16 @@ impl Plan {
         })
     }
 
+    /// (alias, head revision the part was computed from); `None` for a
+    /// publish that does not exist yet. A client that previews a plan sends
+    /// these back so the server can refuse to apply on a moved head.
+    pub fn bases(&self) -> Vec<(String, Option<i64>)> {
+        self.parts
+            .iter()
+            .map(|p| (p.alias.clone(), p.base))
+            .collect()
+    }
+
     /// Human readable lines, one per change.
     pub fn lines(&self) -> Vec<String> {
         let multi = self.parts.len() > 1;

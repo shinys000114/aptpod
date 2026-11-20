@@ -55,8 +55,19 @@ pub struct CellStatus {
 }
 
 impl Repo {
-    /// Opens (or creates) a repository in `data_dir`.
+    /// Opens (or creates) a repository in `data_dir` and cleans what an
+    /// interrupted publish left behind. Only the single writer should do
+    /// this; other handles use [`Repo::open_reader`].
     pub fn open(data_dir: &Path) -> Result<Self, Error> {
+        let repo = Self::open_reader(data_dir)?;
+        for p in db::publishes(&repo.conn)? {
+            clean_leftovers(&p.layout.path)?;
+        }
+        Ok(repo)
+    }
+
+    /// Opens a handle for queries; touches no published tree.
+    pub fn open_reader(data_dir: &Path) -> Result<Self, Error> {
         fs::create_dir_all(data_dir)?;
         let conn = db::open(&data_dir.join("aptpod.db"))?;
         let repo = Self {
@@ -65,9 +76,6 @@ impl Repo {
             signer: None,
             clock: Box::new(|| time::OffsetDateTime::now_utc().unix_timestamp()),
         };
-        for p in db::publishes(&repo.conn)? {
-            clean_leftovers(&p.layout.path)?;
-        }
         Ok(repo)
     }
 
