@@ -24,6 +24,30 @@
 </div>
 
 {% if can_publish %}
+<h2>Add packages</h2>
+<form class="action" hx-post="{{ s.base }}p/{{ alias }}/add" hx-encoding="multipart/form-data" hx-target="#add-result">
+  <select name="component">{% for c in components %}<option>{{ c }}</option>{% endfor %}</select>
+  <input name="dists" placeholder="dists: detect (default), all, or a list" size="30">
+  <label class="check"><input type="checkbox" name="replace" value="1"> replace</label>
+  <input type="file" name="file" accept=".deb" multiple required>
+  <button type="submit">Upload and preview</button>
+</form>
+<div id="add-result"></div>
+
+<h2>Promote</h2>
+<form class="action" hx-post="{{ s.base }}p/{{ alias }}/promote" hx-target="#promote-result">
+  <select name="component">{% for c in components %}<option>{{ c }}</option>{% endfor %}</select>
+  <input name="packages" placeholder="patterns" required>
+  <input name="dists" placeholder="from dists (default: all)">
+  <select name="to_publish">{% for p in publishes %}<option{% if *p == *alias %} selected{% endif %}>{{ p }}</option>{% endfor %}</select>
+  <input name="to_component" placeholder="to component (same)">
+  <input name="to_dist" placeholder="to dist">
+  <label class="check"><input type="checkbox" name="all_versions" value="1"> all versions</label>
+  <label class="check"><input type="checkbox" name="move" value="1"> move</label>
+  <button type="submit">Preview</button>
+</form>
+<div id="promote-result"></div>
+
 <h2>Remove packages</h2>
 <form class="action" hx-post="{{ s.base }}p/{{ alias }}/rm" hx-target="#rm-result">
   <select name="component">{% for c in components %}<option>{{ c }}</option>{% endfor %}</select>
@@ -33,5 +57,38 @@
   <button type="submit">Preview</button>
 </form>
 <div id="rm-result"></div>
+{% endif %}
+
+<h2>Snapshots</h2>
+{% if can_publish %}
+<form class="action" hx-post="{{ s.base }}p/{{ alias }}/snapshots" hx-target="#snapshots">
+  <input name="label" placeholder="label" required pattern="[A-Za-z0-9._-]+">
+  <input name="description" placeholder="description" size="40">
+  <button type="submit">Label HEAD</button>
+</form>
+{% endif %}
+<div id="snapshots" hx-get="{{ s.base }}p/{{ alias }}/snapshots" hx-trigger="load, packages-changed from:body"></div>
+
+<h2>History</h2>
+<div id="history" hx-get="{{ s.base }}p/{{ alias }}/history" hx-trigger="load, packages-changed from:body"></div>
+<div id="diff"></div>
+<div id="rollback-result"></div>
+
+<h2>Layout</h2>
+{% if managed %}
+<p class="muted">Managed by the server's config file; edit it there and reload the server.</p>
+<pre class="log">{{ layout_toml }}</pre>
+{% else if can_admin %}
+<form class="block" hx-post="{{ s.base }}p/{{ alias }}/layout" hx-target="#layout-result">
+  <textarea name="layout" rows="14" class="mono">{{ layout_toml }}</textarea>
+  <div class="row">
+    <label class="check"><input type="checkbox" name="force" value="1"> force (drop cells that hold packages)</label>
+    <label class="check"><input type="checkbox" name="adopt" value="1"> adopt (new path holds a tree)</label>
+    <button type="submit">Preview</button>
+  </div>
+</form>
+<div id="layout-result"></div>
+{% else %}
+<pre class="log">{{ layout_toml }}</pre>
 {% endif %}
 {% endblock %}

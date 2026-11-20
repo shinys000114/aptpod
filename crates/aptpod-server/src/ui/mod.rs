@@ -21,6 +21,9 @@ use axum::{Json, Router};
 use serde::Deserialize;
 
 use crate::api::{ApiError, AppState, Caller, Outcome};
+
+mod admin;
+mod repo;
 use crate::authdb::{Role, User, random_hex};
 
 const SESSION: &str = "aptpod_session";
@@ -43,6 +46,8 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/p/{alias}", get(publish_page))
         .route("/p/{alias}/packages", get(packages_part))
         .route("/p/{alias}/rm", post(rm))
+        .merge(repo::routes())
+        .merge(admin::routes())
         .route(
             "/ui/htmx-2.0.11.min.js",
             get(|| asset(HTMX, "text/javascript")),
@@ -126,10 +131,10 @@ pub struct UiUser {
 }
 
 impl UiUser {
-    fn caller(&self) -> Caller {
+    pub(super) fn caller(&self) -> Caller {
         Caller::from_session(self.user.clone())
     }
-    fn shell(&self) -> Shell {
+    pub(super) fn shell(&self) -> Shell {
         Shell {
             user: self.user.name.clone(),
             role: self.user.role.as_str(),
@@ -137,7 +142,7 @@ impl UiUser {
             base: base(),
         }
     }
-    fn can(&self, role: Role) -> bool {
+    pub(super) fn can(&self, role: Role) -> bool {
         self.user.role >= role
     }
 }
@@ -178,7 +183,13 @@ impl FromRequestParts<Arc<AppState>> for UiUser {
     }
 }
 
-fn render<T: Template>(t: &T) -> Response {
+pub(super) fn read_log(st: &AppState, id: i64) -> String {
+    std::fs::read(crate::runner::log_path(st, id))
+        .map(|b| String::from_utf8_lossy(&b[b.len().saturating_sub(1 << 20)..]).into_owned())
+        .unwrap_or_default()
+}
+
+pub(super) fn render<T: Template>(t: &T) -> Response {
     match t.render() {
         Ok(html) => Html(html).into_response(),
         Err(e) => {
@@ -195,13 +206,13 @@ struct ErrorPart<'a> {
 }
 
 /// API errors as an inline box (200, so htmx swaps it in).
-fn error_part(e: &ApiError) -> Response {
+pub(super) fn error_part(e: &ApiError) -> Response {
     render(&ErrorPart {
         message: e.message(),
     })
 }
 
-fn fmt_time(st: &AppState, t: Option<i64>) -> String {
+pub(super) fn fmt_time(st: &AppState, t: Option<i64>) -> String {
     t.and_then(|t| jiff::Timestamp::from_second(t).ok())
         .map(|ts| {
             ts.to_zoned_datetime(st.cfg.tz())
@@ -211,7 +222,7 @@ fn fmt_time(st: &AppState, t: Option<i64>) -> String {
         .unwrap_or_default()
 }
 
-fn state_class(state: &str) -> &'static str {
+pub(super) fn state_class(state: &str) -> &'static str {
     match state {
         "done" | "synced" => "ok",
         "failed" => "bad",
@@ -375,6 +386,7 @@ fn job_rows(st: &AppState, limit: usize) -> Result<Vec<JobRow>, ApiError> {
 #[template(path = "index.html")]
 struct IndexPage {
     s: Shell,
+    can_admin: bool,
     publishes: Vec<PublishRow>,
     mirrors: Vec<MirrorRow>,
     jobs: Vec<JobRow>,
@@ -425,6 +437,7 @@ async fn index(State(st): State<Arc<AppState>>, u: UiUser) -> Response {
         }
         Ok(IndexPage {
             s: u.shell(),
+            can_admin: u.can(Role::Admin),
             publishes,
             mirrors,
             jobs: job_rows(&st, 10)?,
@@ -465,16 +478,16 @@ struct JobPage {
     summary: String,
     error: Option<String>,
     log: String,
+    running: bool,
 }
 
 async fn job_page(State(st): State<Arc<AppState>>, u: UiUser, Path(id): Path<i64>) -> Response {
     let Ok(Some(j)) = st.auth.job(id) else {
         return (StatusCode::NOT_FOUND, "no such job").into_response();
     };
-    let log = std::fs::read(crate::runner::log_path(&st, id))
-        .map(|b| String::from_utf8_lossy(&b[b.len().saturating_sub(1 << 20)..]).into_owned())
-        .unwrap_or_default();
+    let log = read_log(&st, id);
     render(&JobPage {
+        running: j.state == "running",
         s: u.shell(),
         id,
         state_class: state_class(&j.state),
@@ -507,6 +520,10 @@ struct PublishPage {
     components: Vec<String>,
     matrix: Vec<MatrixRow>,
     can_publish: bool,
+    /// Targets for promote.
+    publishes: Vec<String>,
+    layout_toml: String,
+    can_admin: bool,
 }
 
 async fn publish_page(
@@ -515,8 +532,16 @@ async fn publish_page(
     Path(alias): Path<String>,
 ) -> Response {
     let a = alias.clone();
-    let got = crate::api::read(&st, move |r| Ok((r.layout(&a)?, r.status(&a)?))).await;
-    let (layout, cells) = match got {
+    let got = crate::api::read(&st, move |r| {
+        let all = r
+            .publishes()?
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect::<Vec<_>>();
+        Ok((r.layout(&a)?, r.status(&a)?, all))
+    })
+    .await;
+    let (layout, cells, publishes) = match got {
         Ok(x) => x,
         Err(e) => return error_part(&e),
     };
@@ -545,6 +570,9 @@ async fn publish_page(
         components: layout.components.clone(),
         matrix,
         can_publish: u.can(Role::Publisher),
+        can_admin: u.can(Role::Admin),
+        layout_toml: toml::to_string_pretty(&layout).unwrap_or_default(),
+        publishes,
         alias,
     })
 }
@@ -640,7 +668,7 @@ struct AppliedPart {
 
 /// The preview of `out`, or what applying did; applied changes tell the
 /// page to refresh its lists (`packages-changed`).
-fn outcome(
+pub(super) fn outcome(
     out: &Outcome,
     action: String,
     fields: Vec<(String, String)>,
@@ -667,7 +695,7 @@ fn outcome(
     })
 }
 
-fn parse_expect(s: &str) -> Result<crate::api::Bases, ApiError> {
+pub(super) fn parse_expect(s: &str) -> Result<crate::api::Bases, ApiError> {
     if s.is_empty() {
         return Ok(None);
     }

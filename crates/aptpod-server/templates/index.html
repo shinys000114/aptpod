@@ -19,6 +19,26 @@
 </table>
 {% endif %}
 
+{% if can_admin %}
+<details>
+  <summary>New publish</summary>
+  <form class="block" hx-post="{{ s.base }}publishes/new" hx-target="#new-result">
+    <input name="alias" placeholder="alias" required>
+    <textarea name="layout" rows="8" class="mono">path = "/srv/apt/NAME"
+dists = ["noble"]
+components = ["main"]
+architectures = ["amd64"]
+origin = ""
+label = ""
+sign = true
+</textarea>
+    <div class="row"><label class="check"><input type="checkbox" name="adopt" value="1"> adopt (path holds a tree)</label>
+    <button type="submit">Preview</button></div>
+  </form>
+  <div id="new-result"></div>
+</details>
+{% endif %}
+
 <h1>Mirrors</h1>
 {% if mirrors.is_empty() %}<p class="muted">No mirrors.</p>{% else %}
 <table>

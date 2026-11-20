@@ -152,35 +152,35 @@ pub(crate) async fn rm(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PromoteReq {
-    component: String,
+pub(crate) struct PromoteReq {
+    pub(crate) component: String,
     #[serde(default)]
-    packages: Vec<String>,
+    pub(crate) packages: Vec<String>,
     #[serde(default)]
-    all: bool,
-    versions: Option<String>,
-    arch: Option<String>,
+    pub(crate) all: bool,
+    pub(crate) versions: Option<String>,
+    pub(crate) arch: Option<String>,
     /// Source dists (default: all of the source publish).
-    dists: Option<Vec<String>>,
+    pub(crate) dists: Option<Vec<String>>,
     /// Target publish (default: the same one).
-    to_publish: Option<String>,
+    pub(crate) to_publish: Option<String>,
     /// Target component (default: the same one).
-    to_component: Option<String>,
+    pub(crate) to_component: Option<String>,
     /// Single target dist (with a single source dist).
-    to_dist: Option<String>,
+    pub(crate) to_dist: Option<String>,
     /// Every matching version instead of the newest.
     #[serde(default)]
-    all_versions: bool,
+    pub(crate) all_versions: bool,
     /// Remove from the source.
     #[serde(default, rename = "move")]
-    move_: bool,
+    pub(crate) move_: bool,
     #[serde(default)]
-    apply: bool,
+    pub(crate) apply: bool,
     #[serde(default)]
-    expect: Bases,
+    pub(crate) expect: Bases,
 }
 
-async fn promote(
+pub(crate) async fn promote(
     State(st): St,
     caller: Caller,
     Path(alias): Path<String>,
@@ -263,16 +263,16 @@ async fn prune(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RollbackReq {
+pub(crate) struct RollbackReq {
     /// `#<revision>` or a snapshot label.
-    to: String,
+    pub(crate) to: String,
     #[serde(default)]
-    apply: bool,
+    pub(crate) apply: bool,
     #[serde(default)]
-    expect: Bases,
+    pub(crate) expect: Bases,
 }
 
-async fn rollback(
+pub(crate) async fn rollback(
     State(st): St,
     caller: Caller,
     Path(alias): Path<String>,
@@ -295,21 +295,21 @@ async fn rollback(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct LayoutReq {
-    layout: Layout,
+pub(crate) struct LayoutReq {
+    pub(crate) layout: Layout,
     /// Allow dropping cells or architectures that hold packages.
     #[serde(default)]
-    force: bool,
+    pub(crate) force: bool,
     /// Take over a new path that already holds a repository tree.
     #[serde(default)]
-    adopt: bool,
+    pub(crate) adopt: bool,
     #[serde(default)]
-    apply: bool,
+    pub(crate) apply: bool,
     #[serde(default)]
-    expect: Bases,
+    pub(crate) expect: Bases,
 }
 
-async fn set_layout(
+pub(crate) async fn set_layout(
     State(st): St,
     caller: Caller,
     Path(alias): Path<String>,
@@ -371,11 +371,11 @@ async fn delete_publish(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct HistoryQuery {
-    limit: Option<usize>,
+pub(crate) struct HistoryQuery {
+    pub(crate) limit: Option<usize>,
 }
 
-async fn history(
+pub(crate) async fn history(
     State(st): St,
     caller: Caller,
     Path(alias): Path<String>,
@@ -388,13 +388,13 @@ async fn history(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct DiffQuery {
-    from: String,
+pub(crate) struct DiffQuery {
+    pub(crate) from: String,
     /// Default: HEAD.
-    to: Option<String>,
+    pub(crate) to: Option<String>,
 }
 
-async fn diff(
+pub(crate) async fn diff(
     State(st): St,
     caller: Caller,
     Path(alias): Path<String>,
@@ -406,7 +406,7 @@ async fn diff(
     Ok(Json(read(&st, move |r| r.diff(&alias, &from, &to)).await?))
 }
 
-async fn snapshots(
+pub(crate) async fn snapshots(
     State(st): St,
     caller: Caller,
     Path(alias): Path<String>,
@@ -417,15 +417,15 @@ async fn snapshots(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SnapshotReq {
-    label: String,
+pub(crate) struct SnapshotReq {
+    pub(crate) label: String,
     #[serde(default)]
-    description: String,
+    pub(crate) description: String,
     /// `#<revision>`, a label or HEAD (default).
-    at: Option<String>,
+    pub(crate) at: Option<String>,
 }
 
-async fn snapshot_create(
+pub(crate) async fn snapshot_create(
     State(st): St,
     caller: Caller,
     Path(alias): Path<String>,
@@ -443,7 +443,7 @@ async fn snapshot_create(
     Ok(Json(json!({ "label": label, "revision": rev })))
 }
 
-async fn snapshot_drop(
+pub(crate) async fn snapshot_drop(
     State(st): St,
     caller: Caller,
     Path((alias, label)): Path<(String, String)>,

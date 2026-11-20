@@ -225,7 +225,7 @@ Admin: publishes, mirrors, users, tokens, layout revisions.
 | P2 ✅ | aptpod-repo: layout edits with dry-run, publish create/delete, add (local files, optional expected sha256), rm with globs and version conditions, promote, keep, prune-versions, revisions + snapshot labels, diff, rollback, history retention, refcounted pool cleanup, repair | the aptrix integration scenarios (minus the dropped aptly-only parts) ported and passing |
 | P3 ✅ | aptpod-server + aptpod CLI: API, users/tokens/roles, single writer + jobs with resource keys + SSE, audit, layout revisions, TOML import/export, add from URLs (fetched by the CLI, then uploaded) + `--checksums`, systemd unit | CI uploads and every CLI command go through the server |
 | P4 | aptpod-mirror verbatim (HTTP, then rsync), scheduler | the reference PPA and Debian/Ubuntu mirrors run from aptpod with identical output |
-| P5 | Web UI: matrix, packages, upload/promote with preview, snapshots/diff/rollback, layout editor + history, mirrors, jobs, users/tokens | day-to-day work possible from a browser |
+| P5 ✅ | Web UI: matrix, packages, upload/promote with preview, snapshots/diff/rollback, layout editor + history, mirrors, jobs, users/tokens | day-to-day work possible from a browser |
 | P6 | Re-signed mirrors | auto-replicated layout, filters, snapshot per sync |
 | P6.5 | Native Debian packaging: `debian/` (control, rules with vendored crates, changelog, copyright, systemd unit via debhelper), source package builds with `debuild`; CI builds it too | `debuild -us -uc` produces `aptpod` and `aptpod-server` .debs equivalent to the cargo-deb ones |
 | P7 | Migration of the reference host: import aptly's published trees (`dists` + `pool`, no aptly API needed), publish side by side, compare, switch the web server's symlinks, switch CI, move mirror jobs one by one, remove aptly and the old scripts | same paths and key, no client-visible change |
@@ -607,12 +607,17 @@ checks and config-file rules are shared; a preview's bases travel back
 as one JSON hidden field (`expect`). Links go through one function
 (`ui::base`) for a later sub-path deployment.
 
-Progress: P5a slice - login/logout, overview (publishes, mirrors, recent
-jobs), jobs and job log pages, a publish page (dist x component matrix,
-filterable package list), `rm` with preview/apply; tests for the
-session/CSRF/role/stale/escaping invariants. Next: add/upload, promote,
-snapshots/diff/rollback, layout editing, mirrors (sync/stop, log
-follow), users and tokens.
+Progress: P5 done - login/logout; overview (publishes with counts, a new
+publish form, mirrors, recent jobs); a publish page with the dist x
+component matrix, a filterable package list, add (multipart upload,
+streamed with the upload limit), promote, rm, snapshots (label, drop),
+history, diff to HEAD and rollback, and the layout as TOML - every
+change previewed and applied with the previewed heads; mirrors (list,
+definition editor, sync, sync and prune for admins, stop, upstream
+check); jobs with logs that follow a running job; the own tokens
+(created once, revoked) and password; users for admins. Items of the
+config file are shown read-only. tests/ui.rs drives all of it with a
+cookie-keeping client, including the security invariants.
 
 ## Testing
 

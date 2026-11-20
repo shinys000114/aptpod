@@ -1,0 +1,6 @@
+<div class="plan">
+  <p>From {{ from }} to {{ to }}:</p>
+  {% if entries.is_empty() %}<p class="muted">No differences.</p>{% else %}
+  <ul class="changes">{% for e in entries %}<li class="mono">{{ e }}</li>{% endfor %}</ul>
+  {% endif %}
+</div>

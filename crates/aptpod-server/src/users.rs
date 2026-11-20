@@ -44,18 +44,22 @@ async fn hash(st: &Arc<AppState>, password: String) -> Result<String, ApiError> 
         .map_err(ApiError::invalid)
 }
 
-async fn tokens(State(st): St, caller: Caller) -> Res<Vec<authdb::TokenInfo>> {
+pub(crate) async fn tokens(State(st): St, caller: Caller) -> Res<Vec<authdb::TokenInfo>> {
     Ok(Json(st.auth.tokens(caller.user.id)?))
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct TokenReq {
-    name: String,
+pub(crate) struct TokenReq {
+    pub(crate) name: String,
 }
 
 /// A further token for the caller (e.g. for CI); shown once.
-async fn token_create(State(st): St, caller: Caller, Json(req): Json<TokenReq>) -> Res<Value> {
+pub(crate) async fn token_create(
+    State(st): St,
+    caller: Caller,
+    Json(req): Json<TokenReq>,
+) -> Res<Value> {
     if req.name.is_empty() || req.name.len() > 100 {
         return Err(ApiError::invalid("token names have 1 to 100 characters"));
     }
@@ -66,12 +70,12 @@ async fn token_create(State(st): St, caller: Caller, Json(req): Json<TokenReq>) 
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct OwnPasswordReq {
-    current: String,
-    new: String,
+pub(crate) struct OwnPasswordReq {
+    pub(crate) current: String,
+    pub(crate) new: String,
 }
 
-async fn own_password(
+pub(crate) async fn own_password(
     State(st): St,
     caller: Caller,
     Json(req): Json<OwnPasswordReq>,
@@ -103,20 +107,20 @@ async fn own_password(
     Ok(Json(json!({})))
 }
 
-async fn users(State(st): St, caller: Caller) -> Res<Vec<User>> {
+pub(crate) async fn users(State(st): St, caller: Caller) -> Res<Vec<User>> {
     caller.need(Role::Admin)?;
     Ok(Json(st.auth.users()?))
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct UserReq {
-    name: String,
-    password: String,
-    role: Role,
+pub(crate) struct UserReq {
+    pub(crate) name: String,
+    pub(crate) password: String,
+    pub(crate) role: Role,
 }
 
-async fn user_add(State(st): St, caller: Caller, Json(req): Json<UserReq>) -> Res<User> {
+pub(crate) async fn user_add(State(st): St, caller: Caller, Json(req): Json<UserReq>) -> Res<User> {
     caller.need(Role::Admin)?;
     authdb::check_user_name(&req.name).map_err(ApiError::invalid)?;
     if st.auth.user(&req.name)?.is_some() {
@@ -138,9 +142,9 @@ async fn user_add(State(st): St, caller: Caller, Json(req): Json<UserReq>) -> Re
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct UserSetReq {
-    role: Option<Role>,
-    password: Option<String>,
+pub(crate) struct UserSetReq {
+    pub(crate) role: Option<Role>,
+    pub(crate) password: Option<String>,
 }
 
 /// Refuses to leave the server without an admin.
@@ -155,7 +159,7 @@ fn keep_an_admin(st: &AppState, user: &User) -> Result<(), ApiError> {
     Ok(())
 }
 
-async fn user_set(
+pub(crate) async fn user_set(
     State(st): St,
     caller: Caller,
     Path(name): Path<String>,
@@ -177,7 +181,11 @@ async fn user_set(
     Ok(Json(st.auth.user(&name)?.ok_or_else(|| not_found(&name))?))
 }
 
-async fn user_del(State(st): St, caller: Caller, Path(name): Path<String>) -> Res<Value> {
+pub(crate) async fn user_del(
+    State(st): St,
+    caller: Caller,
+    Path(name): Path<String>,
+) -> Res<Value> {
     caller.need(Role::Admin)?;
     let user = st.auth.user(&name)?.ok_or_else(|| not_found(&name))?;
     keep_an_admin(&st, &user)?;

@@ -1,0 +1,1 @@
+<pre class="log" id="joblog"{% if running %} hx-get="{{ s.base }}jobs/{{ id }}/log" hx-trigger="every 2s" hx-swap="outerHTML"{% endif %}>{{ log }}</pre>

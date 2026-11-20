@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Users · aptpod{% endblock %}
+{% block main %}
+<h1>Users</h1>
+<form class="action" hx-post="{{ s.base }}admin/users" hx-target="#users">
+  <input name="name" placeholder="name" required>
+  <select name="role"><option>reader</option><option selected>publisher</option><option>admin</option></select>
+  <input name="password" type="password" placeholder="password" autocomplete="new-password" required minlength="8">
+  <button type="submit">Add user</button>
+</form>
+<div id="users">{% include "users_table.html" %}</div>
+{% endblock %}

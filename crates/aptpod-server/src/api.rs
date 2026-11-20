@@ -261,7 +261,7 @@ async fn whoami(caller: Caller) -> Res<User> {
     Ok(Json(caller.user))
 }
 
-async fn revoke_token(
+pub(crate) async fn revoke_token(
     State(st): St,
     caller: Caller,
     Path(id): Path<i64>,
@@ -279,22 +279,34 @@ async fn revoke_token(
 // ---- uploads ------------------------------------------------------------
 
 #[derive(Serialize)]
-struct UploadInfo {
-    id: String,
-    sha256: String,
-    size: u64,
+pub(crate) struct UploadInfo {
+    pub(crate) id: String,
+    pub(crate) sha256: String,
+    pub(crate) size: u64,
 }
 
 /// Streams the request body into `uploads/<id>.deb`. Uploads are referred
 /// to by id in later requests and removed once applied (or after an hour).
 async fn upload(State(st): St, caller: Caller, body: Body) -> Res<UploadInfo> {
     caller.need(Role::Publisher)?;
+    let info = store_upload(&st, body.into_data_stream()).await?;
+    tracing::info!(user = %caller.user.name, id = %info.id, size = info.size, "upload");
+    Ok(Json(info))
+}
+
+/// Streams `stream` into `uploads/<id>.deb` (at most `upload_limit`
+/// bytes); the API body and the UI's multipart fields both go through
+/// here.
+pub(crate) async fn store_upload<S, E>(st: &AppState, mut stream: S) -> Result<UploadInfo, ApiError>
+where
+    S: futures_util::Stream<Item = Result<axum::body::Bytes, E>> + Unpin,
+    E: std::fmt::Display,
+{
     let id = random_hex(16);
     let tmp = st.uploads.join(format!(".{id}.part"));
     let mut file = tokio::fs::File::create(&tmp).await?;
     let mut hasher = Sha256::new();
     let mut size = 0u64;
-    let mut stream = body.into_data_stream();
     let received: Result<(), ApiError> = async {
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|e| ApiError::invalid(format!("reading the upload: {e}")))?;
@@ -320,8 +332,7 @@ async fn upload(State(st): St, caller: Caller, body: Body) -> Res<UploadInfo> {
     }
     tokio::fs::rename(&tmp, st.uploads.join(format!("{id}.deb"))).await?;
     let sha256 = crate::authdb::hex(&hasher.finalize());
-    tracing::info!(user = %caller.user.name, %id, size, "upload");
-    Ok(Json(UploadInfo { id, sha256, size }))
+    Ok(UploadInfo { id, sha256, size })
 }
 
 fn upload_path(st: &AppState, id: &str) -> Result<PathBuf, ApiError> {
@@ -616,18 +627,22 @@ where
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CreateReq {
-    alias: String,
-    layout: Layout,
+pub(crate) struct CreateReq {
+    pub(crate) alias: String,
+    pub(crate) layout: Layout,
     #[serde(default)]
-    adopt: bool,
+    pub(crate) adopt: bool,
     #[serde(default)]
     pub(crate) apply: bool,
     #[serde(default)]
     pub(crate) expect: Bases,
 }
 
-async fn create_publish(State(st): St, caller: Caller, Json(req): Json<CreateReq>) -> Res<Outcome> {
+pub(crate) async fn create_publish(
+    State(st): St,
+    caller: Caller,
+    Json(req): Json<CreateReq>,
+) -> Res<Outcome> {
     caller.need(Role::Admin)?;
     crate::configfile::refuse(&st, "publish", &req.alias)?;
     st.cfg
@@ -653,30 +668,30 @@ async fn create_publish(State(st): St, caller: Caller, Json(req): Json<CreateReq
 /// `"detect"` (from `~<dist>` version suffixes), `"all"`, or a list.
 #[derive(Deserialize)]
 #[serde(untagged)]
-enum DistsReq {
+pub(crate) enum DistsReq {
     Word(String),
     List(Vec<String>),
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct AddReq {
-    component: String,
-    uploads: Vec<String>,
+pub(crate) struct AddReq {
+    pub(crate) component: String,
+    pub(crate) uploads: Vec<String>,
     #[serde(default)]
-    dists: Option<DistsReq>,
+    pub(crate) dists: Option<DistsReq>,
     #[serde(default)]
-    replace: bool,
+    pub(crate) replace: bool,
     /// What to call each upload in messages (the client's file names).
     #[serde(default)]
-    names: Vec<String>,
+    pub(crate) names: Vec<String>,
     #[serde(default)]
     pub(crate) apply: bool,
     #[serde(default)]
     pub(crate) expect: Bases,
 }
 
-async fn add(
+pub(crate) async fn add(
     State(st): St,
     caller: Caller,
     Path(alias): Path<String>,

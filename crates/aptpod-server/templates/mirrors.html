@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Mirrors · aptpod{% endblock %}
+{% block main %}
+<h1>Mirrors</h1>
+{% if mirrors.is_empty() %}<p class="muted">No mirrors.</p>{% else %}
+<table>
+  <thead><tr><th>Mirror</th><th>Kind</th><th>Path</th><th>State</th><th>Finished</th><th>Summary</th><th>Next run</th><th></th></tr></thead>
+  <tbody>
+  {% for m in mirrors %}
+  <tr>
+    <td><a href="{{ s.base }}mirrors/{{ m.name }}">{{ m.name }}</a></td><td>{{ m.kind }}</td><td class="mono">{{ m.path }}</td>
+    <td><span class="state {{ m.state_class }}">{{ m.state }}</span></td><td>{{ m.finished }}</td><td>{{ m.summary }}</td><td>{{ m.next_run }}</td>
+    <td>{% if m.managed %}<span class="tag">config file</span>{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

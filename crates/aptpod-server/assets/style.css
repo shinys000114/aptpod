@@ -30,3 +30,10 @@ button.link { border: 0; background: none; color: var(--accent); padding: 0 .3re
 ul.changes { margin: .3rem 0 .6rem 1rem; padding: 0; }
 form.login { max-width: 22rem; margin: 3rem auto; display: flex; flex-direction: column; gap: .6rem; }
 form.login label { display: flex; flex-direction: column; gap: .2rem; }
+form.block { display: flex; flex-direction: column; gap: .5rem; margin-bottom: .6rem; }
+form.block textarea { width: 100%; }
+form.inline { display: flex; gap: .4rem; flex-wrap: wrap; }
+.row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; margin: .4rem 0; }
+label.check { display: inline-flex; gap: .3rem; align-items: center; }
+textarea { font: 13px/1.4 ui-monospace, monospace; padding: .5rem; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); color: var(--fg); }
+code { font-family: ui-monospace, monospace; }

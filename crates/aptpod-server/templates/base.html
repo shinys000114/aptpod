@@ -14,7 +14,10 @@
   {% if !s.user.is_empty() %}
   <nav>
     <a href="{{ s.base }}">Overview</a>
+    <a href="{{ s.base }}mirrors">Mirrors</a>
     <a href="{{ s.base }}jobs">Jobs</a>
+    <a href="{{ s.base }}account">Account</a>
+    {% if s.role == "admin" %}<a href="{{ s.base }}admin/users">Users</a>{% endif %}
   </nav>
   <span class="who">{{ s.user }} ({{ s.role }})
     <button class="link" hx-post="{{ s.base }}logout">Log out</button>

@@ -112,17 +112,17 @@ async fn checked(
 }
 
 #[derive(Serialize)]
-struct MirrorView {
-    name: String,
+pub(crate) struct MirrorView {
+    pub(crate) name: String,
     #[serde(flatten)]
-    def: MirrorDef,
-    status: Status,
+    pub(crate) def: MirrorDef,
+    pub(crate) status: Status,
     /// Job of the sync queued or running now.
-    running: Option<i64>,
+    pub(crate) running: Option<i64>,
     /// Next scheduled sync (server time zone).
-    next_run: Option<String>,
+    pub(crate) next_run: Option<String>,
     /// Declared in the config file (edit it there).
-    managed: bool,
+    pub(crate) managed: bool,
 }
 
 fn view(st: &AppState, name: String, def: MirrorDef) -> Result<MirrorView, ApiError> {
@@ -136,7 +136,7 @@ fn view(st: &AppState, name: String, def: MirrorDef) -> Result<MirrorView, ApiEr
     })
 }
 
-async fn list(State(st): St, caller: Caller) -> Res<Vec<MirrorView>> {
+pub(crate) async fn list(State(st): St, caller: Caller) -> Res<Vec<MirrorView>> {
     caller.need(Role::Reader)?;
     let mut out = Vec::new();
     for (name, def) in st.auth.mirrors()? {
@@ -145,7 +145,11 @@ async fn list(State(st): St, caller: Caller) -> Res<Vec<MirrorView>> {
     Ok(Json(out))
 }
 
-async fn show(State(st): St, caller: Caller, Path(name): Path<String>) -> Res<MirrorView> {
+pub(crate) async fn show(
+    State(st): St,
+    caller: Caller,
+    Path(name): Path<String>,
+) -> Res<MirrorView> {
     caller.need(Role::Reader)?;
     let def = st.auth.mirror(&name)?.ok_or_else(|| not_found(&name))?;
     Ok(Json(view(&st, name, def)?))
@@ -179,13 +183,13 @@ async fn create(State(st): St, caller: Caller, Json(req): Json<CreateReq>) -> Re
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct UpdateReq {
-    def: MirrorDef,
+pub(crate) struct UpdateReq {
+    pub(crate) def: MirrorDef,
     #[serde(default)]
-    adopt: bool,
+    pub(crate) adopt: bool,
 }
 
-async fn update(
+pub(crate) async fn update(
     State(st): St,
     caller: Caller,
     Path(name): Path<String>,
@@ -230,14 +234,14 @@ async fn remove(State(st): St, caller: Caller, Path(name): Path<String>) -> Res<
 
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-struct SyncReq {
+pub(crate) struct SyncReq {
     #[serde(default)]
-    prune: bool,
+    pub(crate) prune: bool,
     #[serde(default)]
-    verify_all: bool,
+    pub(crate) verify_all: bool,
 }
 
-async fn sync(
+pub(crate) async fn sync(
     State(st): St,
     caller: Caller,
     Path(name): Path<String>,
@@ -260,7 +264,7 @@ async fn sync(
     Ok(Json(json!({ "job": job })))
 }
 
-async fn stop(State(st): St, caller: Caller, Path(name): Path<String>) -> Res<Value> {
+pub(crate) async fn stop(State(st): St, caller: Caller, Path(name): Path<String>) -> Res<Value> {
     caller.need(Role::Publisher)?;
     match st.mirror_runner.stop(&name) {
         Some(job) => Ok(Json(json!({ "job": job }))),
@@ -273,7 +277,7 @@ async fn stop(State(st): St, caller: Caller, Path(name): Path<String>) -> Res<Va
 }
 
 /// Probes the upstream (Release and signature, or an rsync listing).
-async fn check(State(st): St, caller: Caller, Path(name): Path<String>) -> Res<Value> {
+pub(crate) async fn check(State(st): St, caller: Caller, Path(name): Path<String>) -> Res<Value> {
     caller.need(Role::Reader)?;
     let def = st.auth.mirror(&name)?.ok_or_else(|| not_found(&name))?;
     let (tx, rx) = tokio::sync::oneshot::channel();

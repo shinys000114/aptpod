@@ -1,0 +1,4 @@
+<div class="plan {% if ok %}done{% endif %}">
+{% for l in lines %}<p class="{% if ok %}{% else %}error{% endif %}">{{ l }}</p>{% endfor %}
+{% if let Some(j) = job %}<p><a href="{{ base }}jobs/{{ j }}">Follow job {{ j }}</a></p>{% endif %}
+</div>

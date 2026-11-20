@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Account · aptpod{% endblock %}
+{% block main %}
+<h1>{{ s.user }} <span class="tag">{{ s.role }}</span></h1>
+
+<h2>API tokens</h2>
+<form class="action" hx-post="{{ s.base }}account/tokens" hx-target="#tokens">
+  <input name="name" placeholder="token name (e.g. jenkins)" required>
+  <button type="submit">Create token</button>
+</form>
+<div id="tokens">{% include "tokens.html" %}</div>
+
+<h2>Password</h2>
+<form class="action" hx-post="{{ s.base }}account/password" hx-target="#password-result">
+  <input name="current" type="password" placeholder="current password" autocomplete="current-password" required>
+  <input name="new" type="password" placeholder="new password" autocomplete="new-password" required minlength="8">
+  <button type="submit">Change</button>
+</form>
+<div id="password-result"></div>
+{% endblock %}

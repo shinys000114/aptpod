@@ -5,5 +5,5 @@
 <p>{{ kind }} {{ resource }} by {{ user }}, {{ created }}</p>
 {% if !summary.is_empty() %}<p>{{ summary }}</p>{% endif %}
 {% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}
-<pre class="log">{{ log }}</pre>
+{% include "joblog.html" %}
 {% endblock %}

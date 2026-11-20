@@ -8,9 +8,10 @@ An apt repository server written from scratch in Rust:
   kept) or re-signed with your key, with the upstream layout replicated,
 - a REST API, a web UI and the `aptpod` CLI, scheduled jobs.
 
-**Status: pre-alpha.** Local repositories and verbatim HTTP mirrors work
-through the server and the CLI; rsync mirrors, schedules and the web UI
-are not there yet. See
+**Status: pre-alpha.** Local repositories and verbatim mirrors (HTTP and
+rsync, scheduled) work through the server, the CLI and the web UI (open
+the server's address in a browser and log in); re-signed mirrors are
+not there yet. See
 [docs/plan.md](docs/plan.md).
 
 ## Quick start
