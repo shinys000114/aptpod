@@ -6,6 +6,7 @@ pub mod cache;
 pub mod fetch;
 pub mod http;
 pub mod release;
+pub mod rsync;
 
 /// Errors that stop a whole sync. Problems of one dist are reported in
 /// [`http::DistReport`] instead.

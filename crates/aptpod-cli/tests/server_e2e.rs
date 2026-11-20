@@ -1597,3 +1597,140 @@ fn mirrors() {
     );
     assert!(srv.stop().success());
 }
+
+/// An rsync daemon serving `root` as module `up`; `None` without rsync.
+fn rsync_daemon(root: &Path, dir: &Path) -> Option<(Child, String)> {
+    use std::io::Read;
+    if Command::new("rsync").arg("--version").output().is_err() {
+        require("rsync");
+        return None;
+    }
+    let conf = dir.join("rsyncd.conf");
+    std::fs::write(
+        &conf,
+        format!(
+            "use chroot = no\n[up]\npath = {}\nread only = yes\n",
+            root.display()
+        ),
+    )
+    .unwrap();
+    for _ in 0..10 {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let mut child = Command::new("rsync")
+            .args(["--daemon", "--no-detach", "--address=127.0.0.1"])
+            .arg(format!("--port={port}"))
+            .arg(format!("--config={}", conf.display()))
+            // stdin must not be a socket: rsync would serve it inetd-style
+            // instead of listening.
+            .stdin(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        for _ in 0..100 {
+            if child.try_wait().unwrap().is_some() {
+                break;
+            }
+            if let Ok(mut c) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+                let _ = c.set_read_timeout(Some(Duration::from_millis(500)));
+                let mut buf = [0u8; 8];
+                if c.read_exact(&mut buf).is_ok() && &buf == b"@RSYNCD:" {
+                    return Some((child, format!("rsync://127.0.0.1:{port}/up/")));
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    panic!("rsync daemon did not start");
+}
+
+/// rsync-apt mirrors through the server: definition rules, a two-pass
+/// sync as a job, the trace file.
+#[test]
+fn rsync_mirrors() {
+    let Some((dir, bin, cfg)) = prepare_extra("") else {
+        return;
+    };
+    let d = dir.path();
+    let archive = d.join("upstream");
+    std::fs::create_dir_all(archive.join("dists/stable")).unwrap();
+    std::fs::create_dir_all(archive.join("pool/main/a")).unwrap();
+    std::fs::write(archive.join("dists/stable/Release"), "Suite: stable\n").unwrap();
+    std::fs::write(archive.join("pool/main/a/a_1_all.deb"), "payload").unwrap();
+    let Some((mut daemon, url)) = rsync_daemon(&archive, d) else {
+        return;
+    };
+    let mroot = d.join("mirrors");
+    let base = std::fs::read_to_string(&cfg).unwrap();
+    std::fs::write(
+        &cfg,
+        format!("{base}mirror_roots = [{:?}]\n", mroot.display().to_string()),
+    )
+    .unwrap();
+    let srv = Server::start(&bin, &cfg);
+    let admin = Cli {
+        creds: d.join("admin.toml"),
+        url: srv.url.clone(),
+    };
+    login(&admin, "admin");
+    let dest = mroot.join("deb");
+    let dp = dest.display().to_string();
+    let create = |extra: &[&str], code: i32| {
+        let mut args = vec![
+            "mirror",
+            "create",
+            "deb",
+            "--kind",
+            "rsync-apt",
+            "--url",
+            &url,
+            "--path",
+            &dp,
+        ];
+        args.extend_from_slice(extra);
+        if code == 0 {
+            admin.ok(&args)
+        } else {
+            admin.fails(&args, code)
+        }
+    };
+    assert!(create(&["--dist", "stable"], 1).contains("for http mirrors"));
+    let bad = admin.fails(
+        &[
+            "mirror",
+            "create",
+            "deb",
+            "--kind",
+            "rsync-apt",
+            "--url",
+            "host:/srv",
+            "--path",
+            &dp,
+        ],
+        1,
+    );
+    assert!(bad.contains("not an rsync daemon source"), "{bad}");
+    create(&["--trace-host", "mirror.example"], 0);
+    let out = admin.ok(&["mirror", "sync", "deb", "--wait"]);
+    assert!(
+        out.contains("rsync payloads") && out.contains("rsync indexes") && out.contains("done:"),
+        "{out}"
+    );
+    assert_eq!(
+        std::fs::read(dest.join("pool/main/a/a_1_all.deb")).unwrap(),
+        b"payload"
+    );
+    assert!(dest.join("project/trace/mirror.example").is_file());
+    assert!(
+        admin
+            .ok(&["mirror", "get", "deb"])
+            .contains("kind = \"rsync-apt\"")
+    );
+    assert!(srv.stop().success());
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+}

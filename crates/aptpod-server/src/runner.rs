@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use aptpod_mirror::fetch::Http;
 use aptpod_mirror::http::{Ctx, SyncReport, sync};
+use aptpod_mirror::rsync::RsyncReport;
 
 use crate::api::{ApiError, AppState};
 use crate::events::Job;
@@ -171,6 +172,16 @@ fn summary(r: &SyncReport) -> String {
     s
 }
 
+fn rsync_summary(r: &RsyncReport) -> String {
+    let files: u64 = r.passes.iter().map(|p| p.files_transferred).sum();
+    let bytes: u64 = r.passes.iter().map(|p| p.bytes_transferred).sum();
+    let deleted: u64 = r.passes.iter().map(|p| p.files_deleted).sum();
+    format!(
+        "{files} file(s) transferred ({:.1} MB), {deleted} deleted",
+        bytes as f64 / 1e6
+    )
+}
+
 fn run_task(st: &Arc<AppState>, task: Task) {
     let Task {
         name,
@@ -203,15 +214,36 @@ fn run_task(st: &Arc<AppState>, task: Task) {
         def.path.display()
     ));
 
-    let run = || -> Result<SyncReport, String> {
-        let mut engine = def.engine()?;
+    enum Done {
+        Http(SyncReport),
+        Rsync(RsyncReport),
+    }
+    let run = || -> Result<Done, String> {
+        let engine = def.engine()?;
+        if cancel.load(Ordering::Relaxed) {
+            return Err("interrupted".into());
+        }
+        let mut engine = match engine {
+            crate::mirrors::Engine::Http(e) => e,
+            crate::mirrors::Engine::Rsync(mut r) => {
+                r.delete |= opts.prune;
+                let ctx = aptpod_mirror::rsync::Ctx {
+                    dest: &def.path,
+                    cancel: &cancel,
+                    log: &log,
+                };
+                return aptpod_mirror::rsync::sync(&r, &ctx)
+                    .map(Done::Rsync)
+                    .map_err(|e| match e {
+                        aptpod_mirror::Error::Interrupted => "interrupted".to_string(),
+                        e => e.to_string(),
+                    });
+            }
+        };
         if opts.prune {
             engine.prune = true;
         }
         engine.verify_all |= opts.verify_all;
-        if cancel.load(Ordering::Relaxed) {
-            return Err("interrupted".into());
-        }
         let http = Http::new(Duration::from_secs(60)).map_err(|e| e.to_string())?;
         let state_dir = st.cfg.data_dir.join("mirrors").join(&name);
         let ctx = Ctx {
@@ -221,7 +253,7 @@ fn run_task(st: &Arc<AppState>, task: Task) {
             cancel: &cancel,
             log: &log,
         };
-        sync(&engine, &ctx).map_err(|e| match e {
+        sync(&engine, &ctx).map(Done::Http).map_err(|e| match e {
             aptpod_mirror::Error::Interrupted => "interrupted".to_string(),
             e => e.to_string(),
         })
@@ -230,17 +262,28 @@ fn run_task(st: &Arc<AppState>, task: Task) {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run))
         .unwrap_or_else(|_| Err("internal error (panic); see the server log".into()));
 
-    let (state, sum, error, report) = match &result {
-        Ok(r) if r.ok() => ("done", summary(r), None, Some(r)),
-        Ok(r) => {
+    let (state, sum, error, report_json) = match &result {
+        Ok(Done::Http(r)) if r.ok() => ("done", summary(r), None, serde_json::to_value(r).ok()),
+        Ok(Done::Http(r)) => {
             let failed: Vec<String> = r
                 .dists
                 .iter()
                 .filter(|d| !d.ok)
                 .map(|d| format!("{}: {}", d.dist, d.error.as_deref().unwrap_or("failed")))
                 .collect();
-            ("failed", summary(r), Some(failed.join("; ")), Some(r))
+            (
+                "failed",
+                summary(r),
+                Some(failed.join("; ")),
+                serde_json::to_value(r).ok(),
+            )
         }
+        Ok(Done::Rsync(r)) => (
+            if r.ok { "done" } else { "failed" },
+            rsync_summary(r),
+            r.error.clone(),
+            serde_json::to_value(r).ok(),
+        ),
         Err(e) if e == "interrupted" => ("interrupted", String::new(), Some(e.clone()), None),
         Err(e) => ("failed", String::new(), Some(e.clone()), None),
     };
@@ -251,7 +294,6 @@ fn run_task(st: &Arc<AppState>, task: Task) {
             .map(|e| format!(" ({e})"))
             .unwrap_or_default()
     ));
-    let report_json = report.and_then(|r| serde_json::to_value(r).ok());
     let shown = if sum.is_empty() {
         error.clone().unwrap_or_default()
     } else {

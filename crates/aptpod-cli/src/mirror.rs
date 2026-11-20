@@ -27,13 +27,18 @@ pub enum MirrorCmd {
         /// TOML definition (as `mirror get` prints it), `-` for stdin.
         #[arg(long, conflicts_with_all = ["url", "path", "dist"])]
         from: Option<PathBuf>,
-        /// Archive root (holding `dists/` and `pool/`).
+        /// http (default), rsync-apt or rsync-tree.
+        #[arg(long, default_value = "http")]
+        kind: String,
+        /// Archive root (holding `dists/` and `pool/`); for rsync kinds an
+        /// rsync daemon source (rsync://host/module/).
         #[arg(long, required_unless_present = "from")]
         url: Option<String>,
         /// Destination, under one of the server's mirror_roots.
         #[arg(long, required_unless_present = "from")]
         path: Option<PathBuf>,
-        #[arg(short, long, value_delimiter = ',', required_unless_present = "from")]
+        /// http: dists to mirror.
+        #[arg(short, long, value_delimiter = ',')]
         dist: Vec<String>,
         /// Default: every component the Release lists.
         #[arg(short, long, value_delimiter = ',')]
@@ -64,6 +69,15 @@ pub enum MirrorCmd {
         no_prune: bool,
         #[arg(long)]
         max_delete: Option<usize>,
+        /// rsync: another --exclude pattern (repeatable).
+        #[arg(long)]
+        exclude: Vec<String>,
+        /// rsync-apt: host name for project/trace/<host>.
+        #[arg(long)]
+        trace_host: Option<String>,
+        /// rsync: bandwidth limit in KiB/s.
+        #[arg(long)]
+        bwlimit: Option<u32>,
         /// Mirror into a directory that already holds files (prune off).
         #[arg(long)]
         adopt: bool,
@@ -186,6 +200,7 @@ pub fn run(c: &Client, cmd: MirrorCmd, json: bool) -> Result<(), CliError> {
         MirrorCmd::Create {
             name,
             from,
+            kind,
             url,
             path,
             dist,
@@ -200,6 +215,9 @@ pub fn run(c: &Client, cmd: MirrorCmd, json: bool) -> Result<(), CliError> {
             parallel,
             no_prune,
             max_delete,
+            exclude,
+            trace_host,
+            bwlimit,
             adopt,
         } => {
             let def = if let Some(f) = from {
@@ -222,6 +240,7 @@ pub fn run(c: &Client, cmd: MirrorCmd, json: bool) -> Result<(), CliError> {
                     None => vec![],
                 };
                 let mut d = json!({
+                    "kind": kind, "excludes": exclude, "trace_host": trace_host, "bwlimit": bwlimit,
                     "url": url, "path": path, "dists": dist,
                     "components": component, "architectures": arch,
                     "udebs": udebs, "sources": sources, "extras": extras,
@@ -234,7 +253,16 @@ pub fn run(c: &Client, cmd: MirrorCmd, json: bool) -> Result<(), CliError> {
                 if let Some(m) = max_delete {
                     d["max_delete"] = json!(m);
                 }
-                d.as_object_mut().unwrap().retain(|_, v| !v.is_null());
+                // Leave out what is empty, so the server's defaults apply and
+                // http-only fields do not reach rsync mirrors.
+                d.as_object_mut().unwrap().retain(|_, v| {
+                    !(v.is_null()
+                        || v == &json!(false)
+                        || v.as_array().is_some_and(|a| a.is_empty()))
+                });
+                if no_prune {
+                    d["prune"] = json!(false);
+                }
                 d
             };
             let r: Value = c.post(

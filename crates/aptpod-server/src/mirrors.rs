@@ -17,6 +17,18 @@ use crate::config::Config;
 pub enum Kind {
     /// Verbatim mirror over HTTP(S), upstream signature kept.
     Http,
+    /// A whole apt archive over rsync, in two passes (pool, then indices
+    /// and deletes) plus a trace file.
+    RsyncApt,
+    /// Any tree over rsync, one pass.
+    RsyncTree,
+}
+
+/// What a definition runs.
+#[derive(Debug)]
+pub enum Engine {
+    Http(HttpMirror),
+    Rsync(aptpod_mirror::rsync::RsyncMirror),
 }
 
 fn http() -> Kind {
@@ -48,6 +60,8 @@ pub struct MirrorDef {
     pub url: String,
     /// Where the mirrored tree is written; under `mirror_roots`.
     pub path: PathBuf,
+    /// http: the dists to mirror.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dists: Vec<String>,
     /// Empty: all the dist's Release lists.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -84,12 +98,89 @@ pub struct MirrorDef {
     /// Scheduled syncs run only when enabled.
     #[serde(default = "yes")]
     pub enabled: bool,
+    /// rsync: more `--exclude` patterns.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excludes: Vec<String>,
+    /// rsync-apt: writes `project/trace/<trace_host>` after a sync.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_host: Option<String>,
+    /// rsync: keep hard links (`--hard-links`).
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub hard_links: bool,
+    /// rsync: bandwidth limit in KiB/s.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bwlimit: Option<u32>,
+    /// rsync: I/O timeout in seconds (default 900).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io_timeout: Option<u32>,
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 impl MirrorDef {
     /// The engine configuration; checks everything that does not need the
     /// network.
-    pub fn engine(&self) -> Result<HttpMirror, String> {
+    pub fn engine(&self) -> Result<Engine, String> {
+        match self.kind {
+            Kind::Http => {
+                if !self.excludes.is_empty()
+                    || self.trace_host.is_some()
+                    || self.bwlimit.is_some()
+                    || self.io_timeout.is_some()
+                {
+                    return Err(
+                        "excludes, trace_host, bwlimit and io_timeout are for rsync mirrors".into(),
+                    );
+                }
+                self.http().map(Engine::Http)
+            }
+            Kind::RsyncApt | Kind::RsyncTree => self.rsync().map(Engine::Rsync),
+        }
+    }
+
+    fn rsync(&self) -> Result<aptpod_mirror::rsync::RsyncMirror, String> {
+        use aptpod_mirror::rsync::{Mode, RsyncMirror};
+        let http_only = !self.dists.is_empty()
+            || !self.components.is_empty()
+            || !self.architectures.is_empty()
+            || self.udebs
+            || self.sources
+            || !self.extras.is_empty()
+            || self.keyring.is_some()
+            || self.insecure
+            || !self.ignore_missing.is_empty();
+        if http_only {
+            return Err(
+                "dists, components, architectures, udebs, sources, extras, keyring, insecure and \
+                 ignore_missing are for http mirrors; rsync copies the whole source"
+                    .into(),
+            );
+        }
+        let mode = if self.kind == Kind::RsyncApt {
+            Mode::Apt
+        } else {
+            Mode::Tree
+        };
+        if mode == Mode::Tree && self.trace_host.is_some() {
+            return Err("trace_host is for rsync-apt mirrors".into());
+        }
+        let mut m = RsyncMirror::new(&self.url, mode);
+        m.delete = self.prune;
+        m.max_delete = self.max_delete;
+        m.hard_links = self.hard_links;
+        m.bwlimit = self.bwlimit;
+        m.excludes = self.excludes.clone();
+        m.trace_host = self.trace_host.clone();
+        if let Some(t) = self.io_timeout {
+            m.io_timeout = t.max(10);
+        }
+        m.validate().map_err(|e| e.to_string())?;
+        Ok(m)
+    }
+
+    fn http(&self) -> Result<HttpMirror, String> {
         // Definitions are readable by every reader (config export): no
         // secrets in them.
         let authority = self
@@ -281,8 +372,21 @@ mod tests {
             (d.kind, d.parallel, d.prune, d.enabled),
             (Kind::Http, 4, true, true)
         );
-        let m = d.engine().unwrap();
+        let Engine::Http(m) = d.engine().unwrap() else {
+            panic!("http")
+        };
         assert!(m.url.ends_with('/'));
+        let rs: MirrorDef = toml::from_str(
+            "kind = \"rsync-apt\"\nurl = \"rsync://ftp.example.org/debian/\"\npath = \"/srv/m/debian\"\ntrace_host = \"m.example\"\n",
+        )
+        .unwrap();
+        assert!(matches!(rs.engine().unwrap(), Engine::Rsync(_)));
+        let mut both = rs.clone();
+        both.dists = vec!["stable".into()];
+        assert!(both.engine().unwrap_err().contains("for http mirrors"));
+        let mut ssh = rs.clone();
+        ssh.url = "host:/srv".into();
+        assert!(ssh.engine().is_err());
         let mut no_key = d.clone();
         no_key.insecure = false;
         assert!(no_key.engine().unwrap_err().contains("keyring"));
