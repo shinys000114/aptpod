@@ -544,6 +544,15 @@ process; `examples/bench_add` in aptpod-repo).
   needs the data dir and the publish roots on one filesystem; otherwise
   every package is stored twice (copied).
 
+Limits of these numbers: the link sample is one 79 MB file per mode (about
+1.4 s, so TCP slow start weighs in); the Debian/Ubuntu archives go over
+rsync, where none of the HTTP engine's choices apply. `syncfs` runs every
+sync and cannot be cancelled (slow if another sync is writing to the same
+disk); resume of a preallocated (>= 1 MiB) partial file is not covered by
+a test (a wrong length would only restart the download); indices fetched
+concurrently are held in memory until parsed, so a large Contents file
+selected through `extras` costs that much memory.
+
 ## Testing
 
 - Unit tests per crate; dpkg cross-check for version ordering.

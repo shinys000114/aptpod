@@ -137,7 +137,12 @@ pub fn sync(m: &HttpMirror, ctx: &Ctx) -> Result<SyncReport, Error> {
     let mut cache = HashCache::load(ctx.state_dir);
     let mut report = SyncReport::default();
     let res = run(&m, ctx, &mut cache, &mut report);
-    // Keep what was learnt even when the run failed or was interrupted.
+    // Keep what was learnt even when the run failed or was interrupted;
+    // on those paths the files fetched so far were not flushed yet, and
+    // the cache must not vouch for data still in memory.
+    if res.is_err() {
+        let _ = sync_fs(ctx.dest);
+    }
     cache.retain(|rel| ctx.dest.join(rel).is_file());
     let saved = cache.save();
     res?;
