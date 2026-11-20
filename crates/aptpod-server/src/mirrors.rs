@@ -98,6 +98,10 @@ pub struct MirrorDef {
     /// Scheduled syncs run only when enabled.
     #[serde(default = "yes")]
     pub enabled: bool,
+    /// When to sync (cron: minute hour day month weekday, or @daily ...),
+    /// in the server's time zone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<String>,
     /// rsync: more `--exclude` patterns.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub excludes: Vec<String>,
@@ -221,6 +225,9 @@ impl MirrorDef {
 
     pub fn check(&self, cfg: &Config) -> Result<(), String> {
         cfg.allows_mirror_path(&self.path)?;
+        if let Some(s) = &self.schedule {
+            crate::cron::Cron::parse(s)?;
+        }
         self.engine().map(|_| ())
     }
 }
@@ -233,6 +240,8 @@ pub struct Status {
     pub finished: Option<i64>,
     /// running, done, failed, interrupted
     pub state: Option<String>,
+    /// End of the last successful sync.
+    pub last_ok: Option<i64>,
     pub summary: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub report: Option<serde_json::Value>,
@@ -294,7 +303,7 @@ impl AuthDb {
         Ok(self
             .conn()
             .query_row(
-                "SELECT job, started, finished, state, summary, report FROM mirror_status WHERE name = ?1",
+                "SELECT job, started, finished, state, summary, report, last_ok FROM mirror_status WHERE name = ?1",
                 [name],
                 |r| {
                     Ok(Status {
@@ -306,6 +315,7 @@ impl AuthDb {
                         report: r
                             .get::<_, Option<String>>(5)?
                             .and_then(|s| serde_json::from_str(&s).ok()),
+                        last_ok: r.get(6)?,
                     })
                 },
             )
@@ -332,7 +342,9 @@ impl AuthDb {
         report: Option<&serde_json::Value>,
     ) -> R<()> {
         self.conn().execute(
-            "UPDATE mirror_status SET finished = ?2, state = ?3, summary = ?4, report = ?5 WHERE name = ?1",
+            "UPDATE mirror_status SET finished = ?2, state = ?3, summary = ?4, report = ?5,
+               last_ok = CASE WHEN ?3 = 'done' THEN ?2 ELSE last_ok END
+             WHERE name = ?1",
             params![name, now(), state, summary, report.map(|r| r.to_string())],
         )?;
         Ok(())

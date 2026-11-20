@@ -498,7 +498,21 @@ Open points: stop and shutdown can wait up to the 60 s read timeout on a
 stalled upstream (systemd's default stop timeout is 90 s); job log files
 are never removed; mirror definition changes are not in the job log; a
 binary keyring with several keys given to `mirror create --keyring` is
-untested. Next: P4c rsync kinds, P4d scheduler and
+untested.
+
+Progress: P4c done - `rsync-apt` (two passes: everything but the indices,
+then the indices with `--delete-after`; trace file) and `rsync-tree`
+(one pass), daemon sources only, `--max-delete` brake, exit 24 as a
+warning, upstream update markers removed, SIGTERM on stop, a higher OOM
+score for the rsync child. P4d done - per-mirror cron schedules in the
+server's `timezone` (jiff reads /usr/share/zoneinfo, also from the static
+binary), checked every minute, skipped while a sync runs, missed runs
+not replayed; `status_dir` gets `<name>.json`, `<name>.svg` (badge text
+as the reference tool's: "synced YYYYmmddHHMMSS") and `index.json` on
+every start/end/definition change; `aptpod mirror check` (Release and
+signature, or an rsync listing), `aptpod mirror sync --all [--wait]`.
+P4e (side-by-side on the reference host) is left for when the server is
+installed there. Next: P4c rsync kinds, P4d scheduler and
 public status.
 
 ## Testing

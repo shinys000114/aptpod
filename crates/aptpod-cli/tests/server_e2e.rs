@@ -1513,7 +1513,8 @@ fn mirrors() {
         &kf,
     ]);
     let started = ci.ok(&["mirror", "sync", "slow"]);
-    let job = started.split_whitespace().nth(1).unwrap().to_string();
+    // "slow: job 12 started; ..."
+    let job = started.split_whitespace().nth(2).unwrap().to_string();
     assert!(
         ci.fails(&["mirror", "sync", "slow"], 4)
             .contains("already syncing")
@@ -1530,7 +1531,8 @@ fn mirrors() {
         ci.ok(&["mirror", "show", "slow"])
             .contains("# last sync: interrupted")
     );
-    assert!(ci.ok(&["jobs"]).contains(&format!("#{job} ")));
+    let jobs = ci.ok(&["jobs"]);
+    assert!(jobs.contains(&format!("#{job} ")), "job {job}: {jobs}");
     assert!(!mroot.join("slow/dists/noble").exists(), "nothing switched");
 
     // Config export/import carries mirrors; edit through $VISUAL.
@@ -1715,6 +1717,10 @@ fn rsync_mirrors() {
     );
     assert!(bad.contains("not an rsync daemon source"), "{bad}");
     create(&["--trace-host", "mirror.example"], 0);
+    assert!(
+        admin.ok(&["mirror", "check", "deb"]).contains("ok"),
+        "rsync probe"
+    );
     let out = admin.ok(&["mirror", "sync", "deb", "--wait"]);
     assert!(
         out.contains("rsync payloads") && out.contains("rsync indexes") && out.contains("done:"),
@@ -1733,4 +1739,190 @@ fn rsync_mirrors() {
     assert!(srv.stop().success());
     let _ = daemon.kill();
     let _ = daemon.wait();
+}
+
+/// A signed upstream archive (dist noble, main, amd64) under `dir`;
+/// returns (archive root, binary public key).
+fn signed_upstream(dir: &Path) -> Option<(PathBuf, Vec<u8>, aptpod_core::testutil::TestKey)> {
+    use aptpod_core::deb::read_deb;
+    use aptpod_core::index::ReleaseMeta;
+    use aptpod_core::publish::{ComponentSpec, DistSpec, PublishPackage, publish_dist};
+    let key = aptpod_core::testutil::TestKey::new()?;
+    let archive = dir.join("archive");
+    let deb = aptpod_core::testutil::build_deb(dir, "sched-pkg", "1.0", "amd64", "xz", "");
+    let spec = DistSpec {
+        name: "noble".into(),
+        meta: ReleaseMeta::new("noble", "Up", "up"),
+        architectures: vec!["amd64".into()],
+        components: vec![ComponentSpec {
+            name: "main".into(),
+            packages: vec![PublishPackage {
+                info: read_deb(&deb).unwrap(),
+                file: deb.clone(),
+                mode: Default::default(),
+            }],
+        }],
+    };
+    publish_dist(&archive, &spec, Some(&key.signer())).unwrap();
+    let public = key.public.clone();
+    Some((archive, public, key))
+}
+
+/// Schedules (in the configured time zone), public status files, upstream
+/// checks and `sync --all`.
+#[test]
+fn schedules_status_and_checks() {
+    let up = tempfile::tempdir().unwrap();
+    let Some((archive, public, _key)) = signed_upstream(up.path()) else {
+        return;
+    };
+    let url = static_server(archive.clone(), Duration::ZERO);
+    let Some((dir, bin, cfg)) = prepare_extra("") else {
+        return;
+    };
+    let d = dir.path();
+    let (mroot, status) = (d.join("mirrors"), d.join("status"));
+    let base = std::fs::read_to_string(&cfg).unwrap();
+    std::fs::write(
+        &cfg,
+        format!(
+            "{base}mirror_roots = [{:?}]\nmirror_workers = 2\ntimezone = \"Asia/Seoul\"\nstatus_dir = {:?}\n",
+            mroot.display().to_string(),
+            status.display().to_string()
+        ),
+    )
+    .unwrap();
+    let srv = Server::start(&bin, &cfg);
+    let admin = Cli {
+        creds: d.join("admin.toml"),
+        url: srv.url.clone(),
+    };
+    login(&admin, "admin");
+    let keyfile = d.join("up.gpg");
+    std::fs::write(&keyfile, &public).unwrap();
+    let kf = keyfile.display().to_string();
+    let mk = |name: &str, extra: &[&str]| {
+        let p = mroot.join(name).display().to_string();
+        let mut args = vec![
+            "mirror",
+            "create",
+            name,
+            "--url",
+            &url,
+            "--path",
+            &p,
+            "--dist",
+            "noble",
+            "--keyring",
+            &kf,
+        ];
+        args.extend_from_slice(extra);
+        admin.ok(&args);
+    };
+    assert!(
+        admin
+            .fails(
+                &[
+                    "mirror",
+                    "create",
+                    "bad",
+                    "--url",
+                    &url,
+                    "--path",
+                    &mroot.join("bad").display().to_string(),
+                    "--dist",
+                    "noble",
+                    "--keyring",
+                    &kf,
+                    "--schedule",
+                    "61 * * * *"
+                ],
+                1
+            )
+            .contains("minute")
+    );
+    mk("tick", &["--schedule", "* * * * *"]);
+    mk("manual", &[]);
+
+    // Status files exist before any sync; next run is in +09:00.
+    let ls = admin.ok(&["mirror", "ls"]);
+    assert!(
+        ls.contains("+09:00") && ls.contains("not scheduled"),
+        "{ls}"
+    );
+    let st: Value =
+        serde_json::from_str(&std::fs::read_to_string(status.join("manual.json")).unwrap())
+            .unwrap();
+    assert_eq!(st["state"], "never synced", "{st}");
+    assert!(st["next_run"].is_null());
+    // (tick may already be syncing: its schedule matches every minute.)
+    let st: Value =
+        serde_json::from_str(&std::fs::read_to_string(status.join("tick.json")).unwrap()).unwrap();
+    assert!(st["next_run"].as_str().unwrap().ends_with("+09:00"), "{st}");
+
+    // Checks: a good upstream, then one whose key does not match.
+    let out = admin.ok(&["mirror", "check", "manual"]);
+    assert!(out.contains("ok noble: InRelease signature valid"), "{out}");
+    let other = aptpod_core::testutil::TestKey::new().unwrap();
+    let otherfile = d.join("other.gpg");
+    std::fs::write(&otherfile, &other.public).unwrap();
+    let wp = mroot.join("wrong").display().to_string();
+    admin.ok(&[
+        "mirror",
+        "create",
+        "wrong",
+        "--url",
+        &url,
+        "--path",
+        &wp,
+        "--dist",
+        "noble",
+        "--keyring",
+        &otherfile.display().to_string(),
+        "--disabled",
+    ]);
+    assert!(
+        admin
+            .fails(&["mirror", "check", "wrong"], 1)
+            .contains("check failed: wrong")
+    );
+
+    // sync --all: every enabled mirror (not the disabled one).
+    let out = admin.ok(&["mirror", "sync", "--all", "--wait"]);
+    assert!(
+        out.contains("== manual") && out.contains("== tick") && !out.contains("== wrong"),
+        "{out}"
+    );
+    let st: Value =
+        serde_json::from_str(&std::fs::read_to_string(status.join("manual.json")).unwrap())
+            .unwrap();
+    assert_eq!(st["state"], "synced");
+    assert!(st["last_success"].as_str().unwrap().ends_with("+09:00"));
+    let svg = std::fs::read_to_string(status.join("manual.svg")).unwrap();
+    assert!(svg.contains("synced 20"), "{svg}");
+    let index: Vec<Value> =
+        serde_json::from_str(&std::fs::read_to_string(status.join("index.json")).unwrap()).unwrap();
+    assert_eq!(index.len(), 3);
+
+    // The every-minute schedule fires within a minute, as the scheduler.
+    let deadline = std::time::Instant::now() + Duration::from_secs(75);
+    loop {
+        let jobs = admin.ok(&["jobs", "--json"]);
+        let jobs: Vec<Value> = serde_json::from_str(&jobs).unwrap();
+        if jobs
+            .iter()
+            .any(|j| j["user"] == "scheduler" && j["resource"] == "mirror:tick")
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no scheduled sync: {jobs:?}"
+        );
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    // A deleted mirror's status files go.
+    admin.ok(&["mirror", "delete", "wrong"]);
+    assert!(!status.join("wrong.json").exists() && !status.join("wrong.svg").exists());
+    assert!(srv.stop().success());
 }

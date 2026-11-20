@@ -24,6 +24,14 @@ pub struct Config {
     /// Mirror syncs that may run at the same time.
     #[serde(default = "one")]
     pub mirror_workers: usize,
+    /// Time zone of mirror schedules and status times (IANA name, e.g.
+    /// `Asia/Seoul`, read from /usr/share/zoneinfo); default UTC.
+    #[serde(default)]
+    pub timezone: Option<String>,
+    /// Public directory for mirror status files (`<name>.json`,
+    /// `<name>.svg`, `index.json`), e.g. served next to the mirrors.
+    #[serde(default)]
+    pub status_dir: Option<PathBuf>,
     /// Largest accepted upload, in bytes.
     #[serde(default = "default_upload_limit")]
     pub upload_limit: u64,
@@ -75,6 +83,18 @@ impl Config {
                 }
             }
         }
+        if let Some(tz) = &cfg.timezone {
+            jiff::tz::TimeZone::get(tz)
+                .map_err(|e| format!("{}: timezone {tz:?}: {e}", path.display()))?;
+        }
+        if let Some(d) = &cfg.status_dir
+            && !is_clean_absolute(d)
+        {
+            return Err(format!(
+                "{}: status_dir must be an absolute path",
+                path.display()
+            ));
+        }
         if cfg.mirror_workers == 0 {
             return Err(format!(
                 "{}: mirror_workers must be at least 1",
@@ -94,6 +114,13 @@ impl Config {
             g.homedir = s.homedir.clone();
             g
         })
+    }
+
+    pub fn tz(&self) -> jiff::tz::TimeZone {
+        self.timezone
+            .as_deref()
+            .and_then(|t| jiff::tz::TimeZone::get(t).ok())
+            .unwrap_or(jiff::tz::TimeZone::UTC)
     }
 
     /// Whether `path` may hold a publish.

@@ -619,6 +619,7 @@ async fn config_import(State(st): St, caller: Caller, Json(req): Json<ImportReq>
         for (name, def) in &mirror_changes {
             st.auth.mirror_put(name, def)?;
         }
+        crate::schedule::write_status(&st);
     }
     Ok(Json(out))
 }

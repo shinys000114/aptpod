@@ -51,6 +51,7 @@ pub struct Runner {
 impl Runner {
     pub fn start(st: &Arc<AppState>, workers: usize) {
         let mut threads = st.mirror_runner.threads.lock().unwrap();
+        threads.push(crate::schedule::start(st));
         for i in 0..workers {
             let st = st.clone();
             threads.push(
@@ -97,6 +98,7 @@ impl Runner {
             cancel,
         });
         self.wake.notify_one();
+        crate::schedule::write_status(st);
         Ok(id)
     }
 
@@ -107,6 +109,10 @@ impl Runner {
             c.store(true, Ordering::Relaxed);
             *job
         })
+    }
+
+    pub fn is_stopping(&self) -> bool {
+        self.stopping.load(Ordering::Relaxed)
     }
 
     pub fn running(&self, name: &str) -> Option<i64> {
@@ -146,6 +152,7 @@ fn worker(st: Arc<AppState>) {
         let name = task.name.clone();
         run_task(&st, task);
         r.active.lock().unwrap().remove(&name);
+        crate::schedule::write_status(&st);
     }
 }
 

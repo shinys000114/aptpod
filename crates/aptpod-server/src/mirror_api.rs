@@ -29,6 +29,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         )
         .route("/api/v1/mirrors/{name}/sync", post(sync))
         .route("/api/v1/mirrors/{name}/stop", post(stop))
+        .route("/api/v1/mirrors/{name}/check", post(check))
         .route("/api/v1/jobs/{id}/log", get(job_log))
 }
 
@@ -112,12 +113,15 @@ struct MirrorView {
     status: Status,
     /// Job of the sync queued or running now.
     running: Option<i64>,
+    /// Next scheduled sync (server time zone).
+    next_run: Option<String>,
 }
 
 fn view(st: &AppState, name: String, def: MirrorDef) -> Result<MirrorView, ApiError> {
     Ok(MirrorView {
         status: st.auth.mirror_status(&name)?,
         running: st.mirror_runner.running(&name),
+        next_run: crate::schedule::next_run(st, &def),
         name,
         def,
     })
@@ -158,6 +162,7 @@ async fn create(State(st): St, caller: Caller, Json(req): Json<CreateReq>) -> Re
     }
     let (def, note) = checked(&st, &req.name, req.def, req.adopt, None).await?;
     st.auth.mirror_put(&req.name, &def)?;
+    crate::schedule::write_status(&st);
     tracing::info!(admin = %caller.user.name, mirror = %req.name, "mirror created");
     Ok(Json(json!({ "name": req.name, "note": note })))
 }
@@ -184,6 +189,7 @@ async fn update(
     let (def, note) = checked(&st, &name, req.def, req.adopt, Some(&old)).await?;
     let moved = (old.path != def.path).then(|| old.path.display().to_string());
     st.auth.mirror_put(&name, &def)?;
+    crate::schedule::write_status(&st);
     Ok(Json(
         json!({ "name": name, "note": note, "old_path_left": moved }),
     ))
@@ -205,6 +211,7 @@ async fn remove(State(st): St, caller: Caller, Path(name): Path<String>) -> Res<
         return Err(busy(&name, job));
     }
     st.auth.mirror_del(&name)?;
+    crate::schedule::write_status(&st);
     let _ = std::fs::remove_dir_all(st.cfg.data_dir.join("mirrors").join(&name));
     Ok(Json(json!({ "path_left": def.path })))
 }
@@ -251,6 +258,41 @@ async fn stop(State(st): St, caller: Caller, Path(name): Path<String>) -> Res<Va
             format!("mirror {name:?} is not syncing"),
         )),
     }
+}
+
+/// Probes the upstream (Release and signature, or an rsync listing).
+async fn check(State(st): St, caller: Caller, Path(name): Path<String>) -> Res<Value> {
+    caller.need(Role::Reader)?;
+    let def = st.auth.mirror(&name)?.ok_or_else(|| not_found(&name))?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    // The HTTP engine must not run on a tokio thread.
+    std::thread::spawn(move || {
+        let lines: Vec<(String, Result<String, String>)> = match def.engine() {
+            Err(e) => vec![("config".into(), Err(e))],
+            Ok(crate::mirrors::Engine::Rsync(r)) => {
+                vec![(def.url.clone(), aptpod_mirror::rsync::probe(&r))]
+            }
+            Ok(crate::mirrors::Engine::Http(h)) => {
+                match aptpod_mirror::fetch::Http::new(std::time::Duration::from_secs(30)) {
+                    Ok(http) => aptpod_mirror::http::probe(&h, &http),
+                    Err(e) => vec![("http".into(), Err(e.to_string()))],
+                }
+            }
+        };
+        let _ = tx.send(lines);
+    });
+    let lines = rx
+        .await
+        .map_err(|_| ApiError::internal("the check did not finish"))?;
+    let ok = lines.iter().all(|(_, r)| r.is_ok());
+    let items: Vec<Value> = lines
+        .into_iter()
+        .map(|(what, r)| match r {
+            Ok(m) => json!({ "what": what, "ok": true, "detail": m }),
+            Err(e) => json!({ "what": what, "ok": false, "detail": e }),
+        })
+        .collect();
+    Ok(Json(json!({ "ok": ok, "items": items })))
 }
 
 #[derive(Deserialize)]

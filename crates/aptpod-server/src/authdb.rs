@@ -193,6 +193,17 @@ impl AuthDb {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "busy_timeout", 10_000)?;
         conn.execute_batch(SCHEMA)?;
+        // Columns added after the first release of a table.
+        let has = |table: &str, col: &str| -> R<bool> {
+            let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+            let cols: Vec<String> = stmt
+                .query_map([], |r| r.get::<_, String>(1))?
+                .collect::<R<_>>()?;
+            Ok(cols.iter().any(|c| c == col))
+        };
+        if !has("mirror_status", "last_ok")? {
+            conn.execute_batch("ALTER TABLE mirror_status ADD COLUMN last_ok INTEGER")?;
+        }
         Ok(Self {
             conn: Mutex::new(conn),
         })

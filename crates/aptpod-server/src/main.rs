@@ -5,11 +5,13 @@
 mod api;
 mod authdb;
 mod config;
+mod cron;
 mod events;
 mod mirror_api;
 mod mirrors;
 mod ops;
 mod runner;
+mod schedule;
 mod users;
 mod writer;
 

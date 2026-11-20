@@ -334,6 +334,30 @@ fn wait(child: &mut Child, cancel: &AtomicBool) -> Result<i32, Error> {
     }
 }
 
+/// Lists the source (`--list-only`) without changing anything.
+pub fn probe(m: &RsyncMirror) -> Result<String, String> {
+    m.validate().map_err(|e| e.to_string())?;
+    let out = Command::new(&m.rsync)
+        .args(["--no-motd", "--list-only"])
+        .arg(format!("--contimeout={}", m.connect_timeout))
+        .arg(format!("--timeout={}", m.connect_timeout.max(30)))
+        .arg(&m.source)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("running {}: {e}", m.rsync.display()))?;
+    let code = out.status.code().unwrap_or(20);
+    if code != 0 {
+        let err = String::from_utf8_lossy(&out.stderr);
+        return Err(format!(
+            "rsync exited {code} ({}): {}",
+            exit_meaning(code),
+            err.lines().last().unwrap_or("").trim()
+        ));
+    }
+    let n = String::from_utf8_lossy(&out.stdout).lines().count();
+    Ok(format!("reachable, {n} top-level entries"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

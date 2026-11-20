@@ -78,6 +78,13 @@ pub enum MirrorCmd {
         /// rsync: bandwidth limit in KiB/s.
         #[arg(long)]
         bwlimit: Option<u32>,
+        /// When to sync: cron (minute hour day month weekday) or @daily
+        /// etc., in the server's time zone.
+        #[arg(long)]
+        schedule: Option<String>,
+        /// Do not sync on schedule.
+        #[arg(long)]
+        disabled: bool,
         /// Mirror into a directory that already holds files (prune off).
         #[arg(long)]
         adopt: bool,
@@ -97,9 +104,12 @@ pub enum MirrorCmd {
     },
     /// Forgets a mirror; its tree stays on disk (admin).
     Delete { name: String },
-    /// Starts a sync.
+    /// Starts a sync (or of every enabled mirror with --all).
     Sync {
-        name: String,
+        #[arg(required_unless_present = "all")]
+        name: Option<String>,
+        #[arg(long, conflicts_with = "name")]
+        all: bool,
         /// Delete unreferenced pool files this once, even with prune off.
         #[arg(long)]
         prune: bool,
@@ -112,6 +122,13 @@ pub enum MirrorCmd {
     },
     /// Stops a running sync.
     Stop { name: String },
+    /// Checks a mirror's upstream without changing anything.
+    Check {
+        #[arg(required_unless_present = "all")]
+        name: Option<String>,
+        #[arg(long, conflicts_with = "name")]
+        all: bool,
+    },
 }
 
 fn read_input(file: &PathBuf) -> Result<String, CliError> {
@@ -162,8 +179,12 @@ pub fn run(c: &Client, cmd: MirrorCmd, json: bool) -> Result<(), CliError> {
                 } else {
                     st["state"].as_str().unwrap_or("never synced").to_string()
                 };
+                let next = m["next_run"]
+                    .as_str()
+                    .map(|n| format!("next {n}"))
+                    .unwrap_or_else(|| "not scheduled".into());
                 println!(
-                    "{}\t{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}\t{next}",
                     m["name"].as_str().unwrap_or(""),
                     m["path"].as_str().unwrap_or(""),
                     state,
@@ -218,6 +239,8 @@ pub fn run(c: &Client, cmd: MirrorCmd, json: bool) -> Result<(), CliError> {
             exclude,
             trace_host,
             bwlimit,
+            schedule,
+            disabled,
             adopt,
         } => {
             let def = if let Some(f) = from {
@@ -241,6 +264,7 @@ pub fn run(c: &Client, cmd: MirrorCmd, json: bool) -> Result<(), CliError> {
                 };
                 let mut d = json!({
                     "kind": kind, "excludes": exclude, "trace_host": trace_host, "bwlimit": bwlimit,
+                    "schedule": schedule,
                     "url": url, "path": path, "dists": dist,
                     "components": component, "architectures": arch,
                     "udebs": udebs, "sources": sources, "extras": extras,
@@ -262,6 +286,9 @@ pub fn run(c: &Client, cmd: MirrorCmd, json: bool) -> Result<(), CliError> {
                 });
                 if no_prune {
                     d["prune"] = json!(false);
+                }
+                if disabled {
+                    d["enabled"] = json!(false);
                 }
                 d
             };
@@ -304,22 +331,97 @@ pub fn run(c: &Client, cmd: MirrorCmd, json: bool) -> Result<(), CliError> {
         }
         MirrorCmd::Sync {
             name,
+            all,
             prune,
             verify_all,
             wait,
         } => {
-            let r: Value = c.post(
-                &format!("/api/v1/mirrors/{name}/sync"),
-                &json!({ "prune": prune, "verify_all": verify_all }),
-            )?;
-            let job = r["job"].as_i64().unwrap_or_default();
-            if !wait {
-                println!("job {job} started; follow it with `aptpod log {job} -f`");
-                return Ok(());
+            let names: Vec<String> = match name {
+                Some(n) => vec![n],
+                None => {
+                    let _ = all;
+                    let list: Vec<Value> = c.get("/api/v1/mirrors", &[])?;
+                    list.iter()
+                        .filter(|m| m["enabled"].as_bool() != Some(false))
+                        .filter_map(|m| m["name"].as_str().map(String::from))
+                        .collect()
+                }
+            };
+            let mut jobs = Vec::new();
+            for n in &names {
+                match c.post::<Value>(
+                    &format!("/api/v1/mirrors/{n}/sync"),
+                    &json!({ "prune": prune, "verify_all": verify_all }),
+                ) {
+                    Ok(r) => {
+                        let job = r["job"].as_i64().unwrap_or_default();
+                        if !wait {
+                            println!(
+                                "{n}: job {job} started; follow it with `aptpod log {job} -f`"
+                            );
+                        }
+                        jobs.push((n.clone(), job));
+                    }
+                    // With --all, a mirror that is already syncing is not an error.
+                    Err(e) if names.len() > 1 && e.kind == "conflict" => {
+                        eprintln!("{n}: {}", e.message)
+                    }
+                    Err(e) => return Err(e),
+                }
             }
-            let state = follow(c, job, true)?;
-            if state != "done" {
-                return Err(CliError::other(format!("job {job} {state}")));
+            if wait {
+                let mut failed = Vec::new();
+                for (n, job) in &jobs {
+                    if jobs.len() > 1 {
+                        println!("== {n} (job {job})");
+                    }
+                    let state = follow(c, *job, true)?;
+                    if state != "done" {
+                        failed.push(format!("{n}: job {job} {state}"));
+                    }
+                }
+                if !failed.is_empty() {
+                    return Err(CliError::other(failed.join("; ")));
+                }
+            }
+        }
+        MirrorCmd::Check { name, all } => {
+            let names: Vec<String> = match name {
+                Some(n) => vec![n],
+                None => {
+                    let _ = all;
+                    let list: Vec<Value> = c.get("/api/v1/mirrors", &[])?;
+                    list.iter()
+                        .filter_map(|m| m["name"].as_str().map(String::from))
+                        .collect()
+                }
+            };
+            let mut bad = Vec::new();
+            for n in &names {
+                let r: Value = c.post(&format!("/api/v1/mirrors/{n}/check"), &json!({}))?;
+                if json {
+                    print_json(&r);
+                }
+                for it in r["items"].as_array().into_iter().flatten() {
+                    if !json {
+                        println!(
+                            "{n}: {} {}: {}",
+                            if it["ok"].as_bool() == Some(true) {
+                                "ok"
+                            } else {
+                                "FAILED"
+                            },
+                            it["what"].as_str().unwrap_or(""),
+                            it["detail"].as_str().unwrap_or("")
+                        );
+                    }
+                }
+                if r["ok"].as_bool() != Some(true) {
+                    bad.push(n.clone());
+                }
+            }
+            if !bad.is_empty() {
+                return Err(CliError::other(format!("check failed: {}", bad.join(", "))));
             }
         }
         MirrorCmd::Stop { name } => {

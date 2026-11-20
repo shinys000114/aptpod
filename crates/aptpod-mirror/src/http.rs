@@ -934,3 +934,47 @@ fn remove_empty_dirs(dir: &Path) -> Result<bool, Error> {
     }
     Ok(empty)
 }
+
+/// Checks each dist's Release (fetch, signature, checksum table) without
+/// changing anything: one line per dist.
+pub fn probe(m: &HttpMirror, http: &Http) -> Vec<(String, Result<String, String>)> {
+    let mut m = m.clone();
+    if let Err(e) = m.validate() {
+        return vec![("config".into(), Err(e.to_string()))];
+    }
+    let cancel = AtomicBool::new(false);
+    let log = |_: &str| {};
+    let ctx = Ctx {
+        http,
+        dest: Path::new("/"),
+        state_dir: Path::new("/"),
+        cancel: &cancel,
+        log: &log,
+    };
+    m.dists
+        .iter()
+        .map(|d| {
+            let base = join_url(&m.url, &format!("dists/{d}")) + "/";
+            let r = match release_of(&m, &ctx, &base) {
+                Ok((rel, raw)) => Ok(format!(
+                    "{} {}, {} files listed, Date: {}",
+                    if raw.iter().any(|(n, _)| *n == "InRelease") {
+                        "InRelease"
+                    } else {
+                        "Release"
+                    },
+                    if m.keyring.is_some() {
+                        "signature valid"
+                    } else {
+                        "not verified (insecure)"
+                    },
+                    rel.files.len(),
+                    rel.fields.get("Date").map(str::trim).unwrap_or("?")
+                )),
+                Err(DistErr::Changed(e) | DistErr::Fatal(e)) => Err(e),
+                Err(DistErr::Interrupted) => Err("interrupted".into()),
+            };
+            (d.clone(), r)
+        })
+        .collect()
+}
