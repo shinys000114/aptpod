@@ -200,6 +200,11 @@ fn upload(url: &str, token: &str, data: Vec<u8>) -> (u16, Value) {
 /// Checks the tools, writes server.toml and adds the users admin, ci
 /// (publisher) and viewer (reader), each with password `<name>-password`.
 fn prepare() -> Option<(tempfile::TempDir, PathBuf, PathBuf)> {
+    prepare_extra("")
+}
+
+/// [`prepare`] with more server.toml lines.
+fn prepare_extra(extra: &str) -> Option<(tempfile::TempDir, PathBuf, PathBuf)> {
     let server_bin = PathBuf::from(env!("CARGO_BIN_EXE_aptpod")).with_file_name("aptpod-server");
     if !server_bin.is_file() {
         require("the aptpod-server binary (cargo build --workspace)");
@@ -216,7 +221,7 @@ fn prepare() -> Option<(tempfile::TempDir, PathBuf, PathBuf)> {
     std::fs::write(
         &cfg,
         format!(
-            "listen = \"127.0.0.1:0\"\ndata_dir = {:?}\npublish_roots = [{:?}]\nupload_limit = 1000000\n",
+            "listen = \"127.0.0.1:0\"\ndata_dir = {:?}\npublish_roots = [{:?}]\nupload_limit = 1000000\n{extra}",
             d.join("data").display().to_string(),
             roots.display().to_string()
         ),
@@ -1022,4 +1027,180 @@ fn accounts_config_events() {
     }
     let _ = follower.kill();
     assert!(ended, "the follower did not end with the server");
+}
+
+/// A throwaway gpg key with a passphrase; `None` (or a panic under
+/// APTPOD_REQUIRE_TOOLS) without gpg.
+struct GpgKey {
+    home: tempfile::TempDir,
+    fpr: String,
+    pass: PathBuf,
+    public: Vec<u8>,
+}
+
+impl GpgKey {
+    fn new() -> Option<Self> {
+        if Command::new("gpg").arg("--version").output().is_err() {
+            require("gpg");
+            return None;
+        }
+        // short path: gpg-agent socket names are length limited
+        let home = tempfile::Builder::new()
+            .prefix("apk")
+            .tempdir_in("/tmp")
+            .unwrap();
+        std::fs::set_permissions(
+            home.path(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
+        let pass = home.path().join("pass");
+        std::fs::write(&pass, "s3cret-test\n").unwrap();
+        let gpg = |args: &[&str]| {
+            let out = Command::new("gpg")
+                .arg("--homedir")
+                .arg(home.path())
+                .arg("--batch")
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "gpg {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            out.stdout
+        };
+        gpg(&[
+            "--pinentry-mode",
+            "loopback",
+            "--passphrase-file",
+            pass.to_str().unwrap(),
+            "--quick-gen-key",
+            "aptpod test <test@example.invalid>",
+            "ed25519",
+            "sign",
+            "never",
+        ]);
+        let list = String::from_utf8(gpg(&["--with-colons", "--list-secret-keys"])).unwrap();
+        let fpr = list
+            .lines()
+            .find(|l| l.starts_with("fpr:"))
+            .unwrap()
+            .split(':')
+            .nth(9)
+            .unwrap()
+            .to_string();
+        let public = gpg(&["--export", &fpr]);
+        Some(Self {
+            home,
+            fpr,
+            pass,
+            public,
+        })
+    }
+
+    fn signing_toml(&self, key: &str) -> String {
+        format!(
+            "\n[signing]\nkey = {key:?}\nhomedir = {:?}\npassphrase_file = {:?}\n",
+            self.home.path().display().to_string(),
+            self.pass.display().to_string()
+        )
+    }
+}
+
+impl Drop for GpgKey {
+    fn drop(&mut self) {
+        let _ = Command::new("gpgconf")
+            .arg("--homedir")
+            .arg(self.home.path())
+            .args(["--kill", "all"])
+            .status();
+    }
+}
+
+/// Release signing with the key from server.toml; a broken key leaves the
+/// change saved but the tree behind (exit 6) until a restart with a working
+/// key repairs it.
+#[test]
+fn signing() {
+    let Some(key) = GpgKey::new() else {
+        return;
+    };
+    let Some((dir, bin, cfg)) = prepare_extra(&key.signing_toml(&key.fpr)) else {
+        return;
+    };
+    let d = dir.path();
+    let roots = d.join("trees");
+    let keyring = aptpod_core::verify::Keyring::from_bytes(&key.public).unwrap();
+    let verify = |tree: &Path, dist: &str| -> String {
+        let data = std::fs::read(tree.join(format!("dists/{dist}/InRelease"))).unwrap();
+        aptpod_core::verify::verify_inrelease(&keyring, &data).expect("valid InRelease")
+    };
+
+    let srv = Server::start(&bin, &cfg);
+    let admin = Cli {
+        creds: d.join("admin.toml"),
+        url: srv.url.clone(),
+    };
+    login(&admin, "admin");
+    let s = roots.join("s");
+    let sp = s.display().to_string();
+    admin.ok(&[
+        "publish",
+        "create",
+        "s",
+        "--path",
+        &sp,
+        "--dist",
+        "noble",
+        "--component",
+        "main",
+        "--arch",
+        "amd64",
+        "-y",
+    ]);
+    let debs = d.join("debs");
+    std::fs::create_dir_all(&debs).unwrap();
+    let deb = build_deb(&debs, "signed-pkg", "1.0").display().to_string();
+    admin.ok(&["add", "s", "main", &deb, "-d", "noble", "-y"]);
+    let signed = verify(&s, "noble");
+    assert!(signed.contains("main/binary-amd64/Packages"), "{signed}");
+    assert!(s.join("dists/noble/Release.gpg").is_file());
+    assert!(srv.stop().success());
+
+    // A key the keyring does not have: committed, but the tree is behind.
+    let good = std::fs::read_to_string(&cfg).unwrap();
+    std::fs::write(&cfg, good.replace(&key.fpr, &"0".repeat(40))).unwrap();
+    let srv = Server::start(&bin, &cfg);
+    let admin = Cli {
+        url: srv.url.clone(),
+        ..admin
+    };
+    let token = admin.token();
+    let deb2 = build_deb(&debs, "signed-pkg", "1.1").display().to_string();
+    let err = admin.fails(
+        &[
+            "--token", &token, "add", "s", "main", &deb2, "-d", "noble", "-y",
+        ],
+        6,
+    );
+    assert!(err.contains("repair"), "{err}");
+    let rows: Vec<Value> =
+        serde_json::from_str(&admin.ok(&["--token", &token, "ls", "s", "--json"])).unwrap();
+    assert_eq!(rows.len(), 2, "the change is saved");
+    // The old tree is still served intact: old Packages, valid signature.
+    let old = std::fs::read_to_string(s.join("dists/noble/main/binary-amd64/Packages")).unwrap();
+    assert!(!old.contains("Version: 1.1"), "{old}");
+    assert_eq!(verify(&s, "noble"), signed);
+    assert!(srv.stop().success());
+
+    // Fixed key: startup repair brings the tree up to date, signed.
+    std::fs::write(&cfg, &good).unwrap();
+    let srv = Server::start(&bin, &cfg);
+    let packages =
+        std::fs::read_to_string(s.join("dists/noble/main/binary-amd64/Packages")).unwrap();
+    assert!(packages.contains("Version: 1.1"), "{packages}");
+    verify(&s, "noble");
+    assert!(srv.stop().success());
 }

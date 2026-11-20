@@ -210,7 +210,7 @@ Admin: publishes, mirrors, users, tokens, layout revisions.
 | P0 ✅ | Repo, workspace, CI (fmt, clippy, test), release pipeline (musl x86_64/aarch64, two .deb), license/NOTICE | a tag produces both .deb packages |
 | P1 ✅ | aptpod-core: version compare (cross-checked with dpkg), .deb parsing (gz/xz/zst), index writer, by-hash, gpg sign, rpgp verify, pool, atomic swap | containers `apt-get update && install` from a generated tree; indices match apt-ftparchive |
 | P2 ✅ | aptpod-repo: layout edits with dry-run, publish create/delete, add (local files, optional expected sha256), rm with globs and version conditions, promote, keep, prune-versions, revisions + snapshot labels, diff, rollback, history retention, refcounted pool cleanup, repair | the aptrix integration scenarios (minus the dropped aptly-only parts) ported and passing |
-| P3 | aptpod-server + aptpod CLI: API, users/tokens/roles, single writer + jobs with resource keys + SSE, audit, layout revisions, TOML import/export, add from URLs (fetched by the CLI, then uploaded) + `--checksums`, systemd unit | CI uploads and every CLI command go through the server |
+| P3 ✅ | aptpod-server + aptpod CLI: API, users/tokens/roles, single writer + jobs with resource keys + SSE, audit, layout revisions, TOML import/export, add from URLs (fetched by the CLI, then uploaded) + `--checksums`, systemd unit | CI uploads and every CLI command go through the server |
 | P4 | aptpod-mirror verbatim (HTTP, then rsync), scheduler | the reference PPA and Debian/Ubuntu mirrors run from aptpod with identical output |
 | P5 | Web UI: matrix, packages, upload/promote with preview, snapshots/diff/rollback, layout editor + history, mirrors, jobs, users/tokens | day-to-day work possible from a browser |
 | P6 | Re-signed mirrors | auto-replicated layout, filters, snapshot per sync |
@@ -307,14 +307,136 @@ hash of each upload), `aptpod config export/import` (all publish layouts
 as `[publishes.<alias>]` TOML, imported as one plan; publishes missing from
 the file are left alone, unchanged ones get no revision), job events over
 SSE (`GET /api/v1/events`, `aptpod jobs --follow`; streams end on
-shutdown), README quick start. Remaining for P3: a systemd/.deb install
-test, and signing through `[signing]` end to end.
+shutdown), README quick start. Release signing through `[signing]` is tested end
+to end (a broken key leaves the change saved and the old tree intact;
+startup repair signs it once the key works). The .deb packages are
+install-tested in Debian bookworm/trixie and Ubuntu jammy/noble containers
+(postinst user and directories, `sudo` refusal, server as the service user,
+publish, `apt-get install` from the tree, clean stop, purge); this found the
+missing `ca-certificates` dependency.
 
 Open points: previews also run on the writer (they ingest uploads), so P4
 mirror syncs must not hold it for long stretches (download outside the
 writer, commit inside). Signing through server.toml `[signing]` has no
 end-to-end test yet (the engine's signing is covered in P1/P2). A saved
 token is sent only to the server URL it was issued by.
+
+## P4 design (verbatim mirrors, scheduler)
+
+Decided: aptpod takes over everything the reference host's mirror tool
+does, including the plain-tree rsync mirrors and the public status JSON
+and SVG badges, so that tool can be removed in P7; mirrors live under
+their own `mirror_roots`; schedules use a configurable time zone, UTC by
+default.
+
+What the reference host runs today, to be replaced one job at a time:
+
+- one third-party PPA over HTTP: 7 dists x 21 components, one
+  architecture, no sources; every payload verified, failed ones re-fetched
+  (3 tries); a short ignore list of pool paths the upstream indexes still
+  reference but the server answers 404/410 for (checksum, timeout and other
+  server errors stay fatal);
+- four full distribution archives over rsync in "apt" mode: pass 1 without
+  indices (`Packages*`, `Sources*`, `Release*`, `InRelease`), pass 2 with
+  `--delete-after`, `--max-delete` as a brake, hard links kept,
+  `Archive-Update-in-Progress-*` excluded, then a `project/trace/<host>`
+  file;
+- plain-tree rsync mirrors (cloud images), single pass;
+- runs from one timer, sequential or with rsync jobs in parallel after the
+  HTTP mirror; per-job logs, a status JSON per job and an SVG status badge
+  (synced/failed/interrupted + timestamp) served publicly; stop with a
+  timeout; an upstream probe command.
+
+Upstream facts (the HTTP PPA, probed read-only): `InRelease` and
+`Release` + `Release.gpg` are both served; no `Acquire-By-Hash`; indices
+come plain and gzip; some indices listed in `Release` answer 404 (a whole
+component is advertised but not served); `dists/` has a directory listing.
+The engine must not assume the shape aptpod-core writes.
+
+Model: a mirror is server configuration (DB, API, CLI, `[mirrors.<name>]`
+in `aptpod config`): name, kind (`http`, `rsync-apt`, `rsync-tree`),
+source URL, destination path (under `mirror_roots`), enabled, schedule,
+and per kind (destination rules below):
+
+- `http`: dists (explicit), components, architectures, sources and udebs
+  on/off, upstream keyring (armored or binary; required unless
+  `insecure = true`), `ignore_missing` paths, parallel downloads, retries;
+- `rsync-*`: max_delete, extra excludes, timeouts, trace host.
+
+Engine (`aptpod-mirror`, no server dependency, testable on its own):
+
+1. `http`: fetch `InRelease` (fallback `Release` + `Release.gpg`) per
+   dist, verify with the keyring, parse the checksums. Index selection: for
+   each selected component and architecture, `binary-<arch>/` (plus
+   `binary-all` when listed), `debian-installer/` only with udebs,
+   `source/` only with sources, `i18n`, `Contents-*`, `dep11` only when
+   listed in `extras`; of each index every listed compression variant that
+   exists is mirrored (`by-hash` when advertised), the best one (xz, gz,
+   plain) is parsed. A listed index that answers 404 is absent, not an
+   error; one with a wrong size or hash is an error. Everything is checked
+   against the one `Release` read at the start; if upstream changes it
+   mid-sync (hash mismatches on indices), the dist restarts, at most 3
+   times. Then parse the package lists; download missing or changed pool files into place
+   (`.part` + rename, resume, size + sha256 checked, parallel, retries);
+   only then write the dist's index files and Release files byte for byte
+   into a staging `dists/<dist>` and swap it in atomically (core's swap);
+   finally delete pool files no dist references any more, with a
+   `max_delete` brake. The reference set is computed from the dists as
+   they are on disk after the run, including a dist that failed and kept
+   its old indices; if any dist's set cannot be read, nothing is deleted.
+   Pool files listed by an upstream index but answering 404/410 are an
+   error unless their path is in `ignore_missing`. A pool file already present with the expected size
+   and a recorded hash is not re-read; a full verify is a separate option
+   (`verify = "all"`).
+2. `rsync-apt` / `rsync-tree`: run rsync as above (two passes / one),
+   stream its output to the job log, map exit codes (24 "vanished" is not
+   a failure), write the trace file.
+
+Destinations: absolute paths under `mirror_roots`, a server.toml list of
+their own (mirrors usually live on another disk and grow far larger than
+local repositories), never overlapping a publish or another mirror
+(`paths_overlap`). A non-empty destination needs
+`adopt`; on an adopted tree (for example one an older tool filled without
+cleaning) the first sync reports what it would delete and deletes
+nothing, and `aptpod mirror sync <name> --prune` deletes it once reviewed.
+
+Server: mirror syncs do not touch the repository database, so they run on
+a mirror worker pool next to the single writer (`mirror:<name>` resource
+keys, one sync per mirror at a time, `mirror_parallel` workers, default 1).
+Every job gets a log file (`<data_dir>/logs/<job>.log`) streamed over SSE;
+`aptpod jobs logs <id> [--follow]`. SIGTERM stops downloads between files
+and sends SIGTERM to rsync; the job ends `interrupted`. Status per mirror:
+last start/end/result/bytes/files, exposed by the API and written as JSON
+and SVG badge into an optional public `status_dir`.
+
+Scheduler: per-mirror cron expressions (5 fields; UTC unless server.toml
+sets `timezone`, e.g. `Asia/Seoul` - read from `/usr/share/zoneinfo`,
+since local time in a static multi-threaded binary cannot come from libc;
+verified before relying on it) plus
+`aptpod mirror sync <name|--all>` on demand; a run that is still busy is not
+started twice; missed runs while the server was down are not replayed.
+
+CLI: `aptpod mirror ls|show|create|edit|delete|sync|status|check`, `jobs
+logs`. Done when, for the reference PPA and the same selection, every file
+the mirrored indices reference is present with the right hash, every
+index and Release file written is byte-equal to upstream, `apt-get update
+&& apt-get install` works from the result in a container, and the rsync
+jobs run from the scheduler with the same results as today. (The current
+tree is never cleaned, so "same files" against it cannot hold.)
+
+rsync runs in the server's cgroup: a memory-hungry sync can get the server
+killed with it. Run children with a higher `oom_score_adj`, and document
+`MemoryMax` for the unit.
+
+Order: P4a engine for `http` with tests against a local HTTP server: a
+signed tree built by aptpod-core plus a hand-built fixture with the
+upstream quirks (no InRelease, no by-hash, listed-but-absent indices,
+`binary-all`, an index changing mid-sync), covering verify, resume,
+missing files, corrupt payloads, the ignore list, deletes, the brake and a
+failed dist; and real apt in a container against a mirrored subset;
+P4b mirror model, worker pool, job logs, API and CLI; P4c rsync kinds;
+P4d scheduler, status JSON/badges, probe; P4e side-by-side comparison on
+the reference host (into a separate directory, nothing switched).
 
 ## Testing
 

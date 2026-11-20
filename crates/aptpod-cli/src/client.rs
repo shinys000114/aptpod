@@ -84,7 +84,13 @@ impl Client {
             // Uploads and downloads may take long; no total timeout.
             .timeout(None)
             .build()
-            .map_err(|e| CliError::other(chain(&e)))?;
+            .map_err(|e| {
+                let mut m = chain(&e);
+                if m.contains("CA certificates") {
+                    m.push_str(" (install the ca-certificates package)");
+                }
+                CliError::other(m)
+            })?;
         Ok(Self { base, token, http })
     }
 

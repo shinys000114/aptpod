@@ -30,6 +30,8 @@ license-file = ["../../LICENSE", "0"]
 extended-description = """\
 Command line client for aptpod-server: manage apt repositories \
 (dist x component layouts, packages, snapshots) and mirrors."""
+# ca-certificates: the HTTP client reads the system trust store.
+depends = "$auto, ca-certificates"
 section = "admin"
 priority = "optional"
 assets = [

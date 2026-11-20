@@ -49,6 +49,10 @@ jobs:
       - uses: ./.github/actions/build
         with:
           version: 0.0.0-ci+${{ github.sha }}
+      # Install both packages in fresh containers, run the server as its
+      # service user, publish with the CLI and apt-get install the result.
+      - name: Install test
+        run: packaging/test/run.sh dist debian:bookworm debian:trixie ubuntu:jammy ubuntu:noble
       - uses: actions/upload-artifact@v7
         with:
           name: packages
